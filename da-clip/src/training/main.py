@@ -37,6 +37,8 @@ from training.train import train_one_epoch, evaluate
 from training.file_utils import pt_load, check_exists, start_sync_process, remote_sync
 
 
+
+
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
 
@@ -55,7 +57,6 @@ def get_latest_checkpoint(path: str, remote : bool):
     # as writen, this glob recurses, so can pick up checkpoints across multiple sub-folders
     if remote:
         result = subprocess.run(["aws", "s3", "ls", path + "/"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(result)
         if result.returncode == 1:
             return None
         checkpoints = [os.path.join(path, x.split(' ')[-1]) for x in result.stdout.decode().split('\n')[:-1]]
@@ -410,16 +411,16 @@ def main(args):
         return
 
     loss = create_loss(args)
-
+    best_loss = None    
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
+        losses = train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1
 
-        if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
-            evaluate(model, data, completed_epoch, args, writer)
+        # if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
+        #     evaluate(model, data, loss, completed_epoch, args, writer)
 
         # Saving checkpoints.
         if args.save_logs:
@@ -432,13 +433,19 @@ def main(args):
             if scaler is not None:
                 checkpoint_dict["scaler"] = scaler.state_dict()
 
-            if completed_epoch == args.epochs or (
-                args.save_frequency > 0 and (completed_epoch % args.save_frequency) == 0
-            ):
+            # if completed_epoch == args.epochs or (
+            #     args.save_frequency > 0 and (completed_epoch % args.save_frequency) == 0
+            # ):
+            #     torch.save(
+            #         checkpoint_dict,
+            #         os.path.join(args.checkpoint_path, f"epoch_{completed_epoch}.pt"),
+            #     )
+            if best_loss is None or losses["loss"] < best_loss:
                 torch.save(
                     checkpoint_dict,
                     os.path.join(args.checkpoint_path, f"epoch_{completed_epoch}.pt"),
                 )
+                best_loss = losses["loss"]
             if args.delete_previous_checkpoint:
                 previous_checkpoint = os.path.join(args.checkpoint_path, f"epoch_{completed_epoch - 1}.pt")
                 if os.path.exists(previous_checkpoint):
@@ -487,4 +494,5 @@ def copy_codebase(args):
 
 
 if __name__ == "__main__":
+    print(sys.argv[1:])
     main(sys.argv[1:])

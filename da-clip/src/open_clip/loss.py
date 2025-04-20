@@ -72,7 +72,7 @@ class ClipLoss(nn.Module):
             cache_labels=False,
             rank=0,
             world_size=1,
-            use_horovod=False,
+            use_horovod=False
     ):
         super().__init__()
         self.local_loss = local_loss
@@ -114,8 +114,9 @@ class ClipLoss(nn.Module):
         else:
             logits_per_image = logit_scale * image_features @ text_features.T
             logits_per_text = logit_scale * text_features @ image_features.T
-        
+
         return logits_per_image, logits_per_text
+
 
     def forward(self, image_features, text_features, logit_scale, output_dict=False):
         device = image_features.device
@@ -158,9 +159,9 @@ class CoCaLoss(ClipLoss):
         self.caption_loss = nn.CrossEntropyLoss(ignore_index=pad_id)
 
     def forward(self, image_features, text_features, logits, labels, logit_scale, output_dict=False):
-        
+
         clip_loss = torch.tensor(0)
-        
+
         if self.clip_loss_weight:
             clip_loss = super().forward(image_features, text_features, logit_scale)
             clip_loss = self.clip_loss_weight * clip_loss
@@ -178,22 +179,124 @@ class CoCaLoss(ClipLoss):
 
 class DaClipLoss(ClipLoss):
 
-    def forward(
-            self, 
-            image_features, 
-            text_features, 
-            image_degra_features, 
-            text_degra_features, 
-            logit_scale, 
-            output_dict=False
+    def __init__(
+            self,
+            local_loss=False,
+            gather_with_grad=False,
+            cache_labels=False,
+            rank=0,
+            world_size=1,
+            use_horovod=False,
+            l1_loss_weight=0.1,
+            num_loss_weight=0.5,
+            temperature=0.07
     ):
+        super().__init__(
+            local_loss=local_loss,
+            gather_with_grad=gather_with_grad,
+            cache_labels=cache_labels,
+            rank=rank,
+            world_size=world_size,
+            use_horovod=use_horovod
+        )
+        self.l1_loss_fn = nn.L1Loss()
+
+        self.l1_loss_weight = l1_loss_weight
+        self.num_loss_weight = num_loss_weight
+        self.temperature = temperature
+
+    # def numerical_contrastive_loss(self, image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features):
+    #     """
+    #     img_emb: [B, D]
+    #     anchor_text_emb: [B, D]
+    #     num_neg_text_emb: [B, N_neg, D]
+    #     deg_neg_text_emb: [B, N_neg, D]
+    #     """
+    #     # print("image_degra_features", image_degra_features.shape)
+    #     # print("pos_text_features", pos_text_features.shape)
+    #     # print("neg_texts_features", neg_texts_features.shape)
+    #     # print("deg_neg_text_features", deg_neg_text_features.shape)
+
+    #     pos_sim = F.cosine_similarity(image_degra_features, pos_text_features, dim=-1).unsqueeze(1)  # [B,1]
+    #     num_neg_sim = torch.bmm(neg_texts_features, image_degra_features.unsqueeze(2)).squeeze(2)  # [B,N_neg]
+    #     deg_neg_sim = torch.bmm(deg_neg_text_features, image_degra_features.unsqueeze(2)).squeeze(2)  # [B,1]
+
+    #     logits = torch.cat([pos_sim, num_neg_sim, deg_neg_sim], dim=1) / self.temperature
+
+    #     labels = torch.zeros(image_degra_features.size(0), dtype=torch.long, device=image_degra_features.device)
+
+    #     loss = F.cross_entropy(logits, labels)
+    #     return loss
+
+    def numerical_contrastive_loss(self, image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features):
+        B, D = image_degra_features.shape
+        N_neg = neg_texts_features.size(1)
+
+        text_features_all = torch.cat([
+            pos_text_features.unsqueeze(1), neg_texts_features, deg_neg_text_features
+        ], dim=1)
+
+        logits_img2text = torch.bmm(text_features_all, image_degra_features.unsqueeze(2)).squeeze(2) / self.temperature
+        labels_img2text = torch.zeros(B, dtype=torch.long, device=image_degra_features.device)
+        loss_img2text = F.cross_entropy(logits_img2text, labels_img2text)
+
+        logits_text2img = pos_text_features @ image_degra_features.T / self.temperature
+        labels_text2img = torch.arange(B, dtype=torch.long, device=image_degra_features.device)
+        loss_text2img = F.cross_entropy(logits_text2img, labels_text2img)
+
+        loss = (loss_img2text + loss_text2img) / 2.0
+        return loss
+
+
+    def forward(
+            self,
+            image_features,
+            text_features,
+            image_degra_features,
+            logit_scale,
+            output_dict=False,
+            gt_image_features=None,
+            resiual_image_features=None,
+            # degradation_features=None,
+            pos_text_features=None,
+            neg_texts_features=None,
+            deg_neg_text_features=None
+
+    ):
+
         clip_loss = super().forward(image_features, text_features, logit_scale)
-        degra_loss = super().forward(image_degra_features, text_degra_features, logit_scale)
+        # degra_loss = super().forward(image_degra_features, degradation_features, logit_scale)
+        num_contrastive_loss = self.numerical_contrastive_loss(
+            image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features
+        )
+
+        gt_l1_loss = 0.0
+        resiual_ls_loss = 0.0
+        if gt_image_features is not None:
+            gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
+            gt_l1_loss = self.l1_loss_weight * gt_l1_loss
+
+        if resiual_image_features is not None:
+            resiual_ls_loss = self.l1_loss_fn(image_degra_features, resiual_image_features)
+            resiual_ls_loss = resiual_ls_loss
+
+        # if output_dict:
+        #     return {"contrastive_loss": clip_loss,
+        #             "degra_loss": degra_loss,
+        #             "l1_loss": l1_loss,
+        #             }
+        # return clip_loss, degra_loss, l1_loss
+
 
         if output_dict:
-            return {"contrastive_loss": clip_loss, "degra_loss": degra_loss}
+            return {"contrastive_loss": clip_loss,
+                    "degra_loss": num_contrastive_loss,
+                    "gt_l1_loss": gt_l1_loss,
+                    "resiual_ls_loss": resiual_ls_loss
+                    }
 
-        return clip_loss, degra_loss
+        return clip_loss, num_contrastive_loss, gt_l1_loss, resiual_ls_loss
+        # , self.lambda_img_triplet * img_triplet_loss
 
 
 class DistillClipLoss(ClipLoss):

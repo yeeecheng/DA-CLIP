@@ -19,6 +19,7 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableD
 from torch.utils.data.distributed import DistributedSampler
 from webdataset.filters import _shuffle
 from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
+import re
 
 try:
     import horovod.torch as hvd
@@ -39,35 +40,106 @@ class CsvDataset(Dataset):
 
         self.images = df[img_key].tolist()
         self.captions = df[caption_key].tolist()
-        self.transforms = transforms
+
         logging.debug('Done loading data.')
 
+        self.transforms = transforms
         self.tokenize = tokenizer
         self.da = da
         self.crop = crop
 
+        self.samples = []
+        for path, caption in zip(self.images, self.captions):
+            _, degradation = caption.split('| ')
+            d_type, _, val = degradation.strip().partition('with parameter ')
+            val = float(val)
+            self.samples.append({
+                'img': path,
+                'value': val,
+                'degradation': degradation,
+                'type': d_type.strip()
+            })
+
+        self.neg_text_pool = {
+            "blur": torch.cat([self.tokenize([f"blur with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
+            "noisy": torch.cat([self.tokenize([f"noisy with parameter {v}"])[0] for v in range(1, 41,1)], dim=0),
+            "resize": torch.cat([self.tokenize([f"resize with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
+            "jpeg": torch.cat([self.tokenize([f"jpeg with parameter {v}"])[0] for v in range(1, 41,1)], dim=0)
+        }
+        self.degradation_types = list(self.neg_text_pool.keys())
+
+
+        self.num_to_word = {
+            '0.5': 'zero point five', '1': 'one', '2': 'two', '3': 'three',
+            '4': 'four', '5': 'five', '6': 'six', '7': 'seven', '8': 'eight',
+            '9': 'nine', '10': 'ten', '11': 'eleven', '12': 'twelve', '13': 'thirteen',
+            '14': 'fourteen', '15': 'fifteen', '16': 'sixteen', '17': 'seventeen',
+            '18': 'eighteen', '19': 'nineteen', '20': 'twenty', '21': 'twenty-one',
+            '22': 'twenty-two', '23': 'twenty-three', '24': 'twenty-four', '25': 'twenty-five',
+            '26': 'twenty-six', '27': 'twenty-seven', '28': 'twenty-eight', '29': 'twenty-nine',
+            '30': 'thirty', '31': 'thirty-one', '32': 'thirty-two', '33': 'thirty-three',
+            '34': 'thirty-four', '35': 'thirty-five', '36': 'thirty-six', '37': 'thirty-seven',
+            '38': 'thirty-eight', '39': 'thirty-nine', '40': 'forty'
+        }
+
     def __len__(self):
         return len(self.captions)
 
+    def replace_number_with_word(self, text):
+
+        pattern = r'\b(?:0\.5|[1-9]|[1-3][0-9]|40)\b'
+
+        # 替換函數
+        def replacer(match):
+            return self.num_to_word[match.group(0)]
+
+        # 執行替換
+        result = re.sub(pattern, replacer, text)
+
+        return result
+
+
     def __getitem__(self, idx):
+
+        # load image and get text (content & degradation)
         images = Image.open(str(self.images[idx]))
         texts = str(self.captions[idx])
+        gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
 
         if self.da:
-            caption, degradation = texts.split(': ')
+            # preprocessing
+            caption, degradation = texts.split('| ')
+            # degradation = self.replace_number_with_word(degradation)
+            # print(degradation)
             caption = self.tokenize([caption])[0]
             degradation = self.tokenize([degradation])[0]
             texts = torch.cat([caption, degradation], dim=0)
-            # texts = torch.cat([caption, caption], dim=0)
 
             if self.crop and random.random() > 0.2:
                 images = random_crop(images)
         else:
             texts = self.tokenize([texts])[0]
 
+        # data transform
         images = self.transforms(images)
-        
-        return images, texts
+        gt_images = self.transforms(gt_images)
+
+        # get the positive and negative sample
+        sample = self.samples[idx]
+        pos_text = degradation
+
+        # get numerail negative text samples
+        neg_texts = self.neg_text_pool[sample['type']]
+        # get degradation negative sample
+        neg_types = [t for t in self.degradation_types  if t != sample['type']]
+        deg_neg_type = random.choice(neg_types)
+        deg_neg_text = self.neg_text_pool[deg_neg_type]
+
+        resiual_images = gt_images - images
+
+
+        return images, texts, gt_images, pos_text, neg_texts, deg_neg_text, resiual_images
+        # return images, texts, gt_images
 
 
 class SharedEpoch:
@@ -365,10 +437,10 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
                     'Please specify it via `--train-num-samples` if no dataset length info is present.')
     else:
         # Eval will just exhaust the iterator if the size is not specified.
-        num_samples = args.val_num_samples or 0 
+        num_samples = args.val_num_samples or 0
 
     shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
-    
+
     if resampled:
         pipeline = [ResampledShards2(
             input_shards,
@@ -468,6 +540,7 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
 def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
     assert input_filename
+
     dataset = CsvDataset(
         input_filename,
         preprocess_fn,
@@ -480,6 +553,7 @@ def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     )
     num_samples = len(dataset)
     sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+
     shuffle = is_train and sampler is None
 
     dataloader = DataLoader(
@@ -565,7 +639,7 @@ def get_dataset_fn(data_path, dataset_type):
                 f"Tried to figure out dataset type, but failed for extension {ext}.")
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
-    
+
 
 def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
     preprocess_train, preprocess_val = preprocess_fns

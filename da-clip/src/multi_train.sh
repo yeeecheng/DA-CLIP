@@ -1,18 +1,18 @@
-torchrun --nproc_per_node 4 -m training.main \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6" torchrun --nproc_per_node 7 -m training.main \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
-    --train-data="/home/x_ziwlu/datasets/universal/daclip_train.csv"  \
-    --val-data="/home/x_ziwlu/datasets/universal/daclip_val.csv"  \
+    --train-data="/mnt/hdd8/yicheng/daclip-uir/universal-image-restoration/datasets_1/train/train/merged_daclip_train.csv"  \
+    --val-data="/mnt/hdd8/yicheng/daclip-uir/universal-image-restoration/datasets_1/train/val/merged_daclip_train.csv"  \
     --csv-img-key filepath \
     --csv-caption-key title \
     --warmup 100 \
-    --batch-size=784 \
-    --lr=3e-5 \
+    --batch-size=512 \
+    --lr=2e-5 \
     --wd=0.05 \
-    --epochs=100 \
-    --workers=8 \
+    --epochs=200 \
+    --workers=4 \
     --model daclip_ViT-B-32 \
-    --name "daclip_ViT-B-32-2023-09_b768x4_lr3e-5_e100_zeroadd" \
+    --name "daclip_ViT-B-32-$(date +%Y%m%d%H%M%S)" \
     --pretrained "laion2b_s34b_b79k" \
     --da
