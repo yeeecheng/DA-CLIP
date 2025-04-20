@@ -1,13 +1,12 @@
 import os
 import pandas as pd
 
-root_dir = "/mnt/hdd7/yicheng/daclip-uir/universal-image-restoration/datasets_1/train/val"
-output_csv = "/mnt/hdd7/yicheng/daclip-uir/universal-image-restoration/datasets_1/train/val/merged_daclip_train.csv"
+root_dir = "/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/train"
+output_csv = "/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/train/merged_daclip_train.csv"
 
-# 列出所有 degradation 子資料夾
+
 degradation_dirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
 print(degradation_dirs)
-# 初始化 DataFrame
 merged_df = pd.DataFrame(columns=["filepath", "title"])
 
 future_df = {"filepath":[], "title":[]}

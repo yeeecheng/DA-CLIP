@@ -15,7 +15,7 @@ import json
 IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', 'tif']
 
 # DEGRADATION_TYPES = ['motion-blurry','hazy','jpeg-compressed','low-light','noisy','raindrop','rainy','shadowed','snowy','uncompleted']
-# DEGRADATION_TYPES = ['blur5', 'blur10', 'blur15', 'blur20', 'blur25', 'blur30', 'blur35', 'blur40']
+# DEGRADATION_TYPES = ['blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0']
 # DEGRADATION_TYPES = ['noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40']
 # DEGRADATION_TYPES = ['resize5', 'resize10', 'resize15', 'resize20', 'resize25', 'resize30', 'resize35', 'resize40']
 DEGRADATION_TYPES = ['jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80']
@@ -71,7 +71,7 @@ def generate_captions(dataroot, ci, mode='train'):
             filename = "./" + gt_image_path.split("/")[-1]
             dagradation = degraded_prompts_data[filename]
 
-            title = f'{caption}: {dagradation}'
+            title = f'{caption}| {dagradation}'
 
             future_df["filepath"].append(lq_image_path)
             future_df["title"].append(title)
@@ -82,7 +82,7 @@ def generate_captions(dataroot, ci, mode='train'):
 
 
 if __name__ == "__main__":
-    dataroot = './datasets_1/train/val'
+    dataroot = './datasets/train/'
 
     ci = Interrogator(Config(clip_model_name="ViT-L-14/openai"))
 

@@ -24,6 +24,8 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
     # set data dir
 
     for p in range(10,81,10):
+        
+        p = p / 10.0 if deg_type == "blur" else p
         savedir_GT = f"{save_path}/{mode}/{deg_type}{p}/GT"
         savedir_LQ = f"{save_path}/{mode}/{deg_type}{p}/LQ"
         

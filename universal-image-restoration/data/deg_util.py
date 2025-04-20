@@ -196,9 +196,9 @@ def random_bivariate_Gaussian(kernel_size,
     Returns:
         kernel (ndarray):
     """
-    assert kernel_size % 2 == 1, 'Kernel size must be an odd number.'
+    #assert kernel_size % 2 == 1, 'Kernel size must be an odd number.'
     assert sigma_x_range[0] < sigma_x_range[1], 'Wrong sigma_x_range.'
-    sigma_x = np.random.uniform(sigma_x_range[0], sigma_x_range[1])
+    sigma_x = kernel_size
     if isotropic is False:
         assert sigma_y_range[0] < sigma_y_range[1], 'Wrong sigma_y_range.'
         assert rotation_range[0] < rotation_range[1], 'Wrong rotation_range.'
@@ -208,7 +208,7 @@ def random_bivariate_Gaussian(kernel_size,
         sigma_y = sigma_x
         rotation = 0
 
-    kernel = bivariate_Gaussian(kernel_size, sigma_x, sigma_y, rotation, isotropic=isotropic)
+    kernel = bivariate_Gaussian(21, sigma_x, sigma_y, rotation, isotropic=isotropic)
 
     # add multiplicative noise
     if noise_range is not None:
@@ -954,6 +954,13 @@ def degrade(img, deg_type, param=15):
         output = cv2.filter2D(img, -1, kernel)
     elif deg_type == 'jpeg':
         output = add_jpg_compression(img, param)
+    elif deg_type == "resize":
+
+        h, w, c = img.shape
+        hs, ws = int(h / param), int(w / param)
+        output = random_resize(img, hs, ws)
+        output = random_resize(output, 512, 512)
+        output = np.clip((output * 255.0).round(), 0, 255) / 255.
 
     return output
 
@@ -1022,7 +1029,7 @@ with open(pickledUCDPsfFilename, 'rb') as pklfile:
     ucdpsfDictionary = pickle.load(pklfile, encoding='latin1')
 
 
-def match_dim(data, dim):
+def match_dim(data, dim, crop_mode="random"):
     """
     Resize image dimensions using crop or padding instead of up/down-sampling.
 
@@ -1039,7 +1046,10 @@ def match_dim(data, dim):
         data = pad_edges(data, dim[:2])
     # Crop out edge regions outside detector dimensions     
     if data.shape[0] > dim[0] or data.shape[1] > dim[1]:
-        data = center_crop(data, dim[:2])
+        if crop_mode == 'random':
+            data = random_crop(data, dim)
+        else:
+            data = center_crop(data, dim[:2])
     return data
 
 def pad_edges(data, dim):
@@ -1086,6 +1096,23 @@ def center_crop(data, dim):
     h_end, w_end = [h_start + min(dim[0], data.shape[0]),
                     w_start + min(dim[1], data.shape[1])]
     return data[h_start:h_end, w_start:w_end]
+
+
+def random_crop(data, dim):
+    h, w = data.shape[:2]
+    new_h, new_w = dim
+    if h == new_h:
+        start_h = 0
+    else:
+        start_h = np.random.randint(0, h - new_h + 1)
+    
+    if w == new_w:
+        start_w = 0
+    else:
+        start_w = np.random.randint(0, w - new_w + 1)
+
+    return data[start_h:start_h + new_h, start_w:start_w + new_w]
+
 
 def fft_filter(img, kernel):
     h, w = img.shape
@@ -1154,12 +1181,12 @@ def random_blur(img, max_radius=10, sinc_prob=0.1, deblur_prob=0.1, blur_range=[
     img = cv2.filter2D(img, -1, kernel)
     ori_img = img
 
-    if deg_list is not None: deg_list.append('blur')
-    if sinc_flag and deg_list is not None: deg_list.append('ringing artifact')
+    if deg_list is not None: deg_list.add('blur')
+    if sinc_flag and deg_list is not None: deg_list.add('blur')
 
     if not sinc_flag and random.random() < deblur_prob and kernel_size < 8:
         img = wiener_filter_multi_channel(img, kernel)
-        if deg_list is not None: deg_list.append('ringing artifact')
+        if deg_list is not None: deg_list.add('blur')
 
         img = img.astype(ori_img.dtype)
         # image blur blending
@@ -1192,11 +1219,15 @@ def random_degrade(img, blur_prob=0.8, resize_prob=0.8, noise_prob=0.4, jpeg_pro
     degradations_first  = np.random.permutation(['blur', 'resize', 'noise', 'jpeg'])
     degradations_second = np.random.permutation(['blur', 'noise'])
     degradations_third  = np.random.permutation(['blur', 'resize', 'jpeg'])
+    # degradations_first  = np.random.permutation(['resize'])
+    # degradations_second = np.random.permutation([''])
+    # degradations_third  = np.random.permutation(['resize'])
 
     resize_flag = False
     if random.random() < resize_prob:
         resize_flag = True
 
+ 
     ### first order
     for deg_type in degradations_first:
         if deg_type == 'blur':
@@ -1206,13 +1237,13 @@ def random_degrade(img, blur_prob=0.8, resize_prob=0.8, noise_prob=0.4, jpeg_pro
                 img = under_display_filter(img)
 
         elif deg_type == 'resize' and resize_flag:
-            deg_list.append('blur')
+            deg_list.add('resize')
             img = random_resize(img)
         elif deg_type == 'noise' and random.random() < noise_prob:
-            deg_list.append('noise')
+            deg_list.add('noise')
             img = random_noise(img.astype('float32'))
         elif deg_type == 'jpeg' and random.random() < jpeg_prob:
-            deg_list.append('jpeg block')
+            deg_list.add('jpeg')
             img = random_add_jpg_compression(img, quality_range=(60, 95))
         
     ### second order
@@ -1224,7 +1255,7 @@ def random_degrade(img, blur_prob=0.8, resize_prob=0.8, noise_prob=0.4, jpeg_pro
                 img = under_display_filter(img)
 
         elif deg_type == 'noise' and random.random() < noise_prob * 0.5:
-            deg_list.append('noise')
+            deg_list.add('noise')
             img = random_noise(img.astype('float32'))
 
     ### third order
@@ -1232,10 +1263,10 @@ def random_degrade(img, blur_prob=0.8, resize_prob=0.8, noise_prob=0.4, jpeg_pro
         if deg_type == 'blur' and random.random() < blur_prob:
             img = random_blur(img, max_radius=10, sinc_prob=0.8, deblur_prob=0.1, blur_range=[0.2, 1.], deg_list=deg_list)
         elif deg_type == 'resize' and resize_flag:
-            deg_list.append('blur')
+            deg_list.add('resize')
             img = random_resize(img, hs=h, ws=w)
         elif deg_type == 'jpeg' and random.random() < jpeg_prob:
-            deg_list.append('jpeg block')
+            deg_list.add('jpeg')
             img = random_add_jpg_compression(img, quality_range=(80, 100))
 
     return np.clip((img * 255.0).round(), 0, 255) / 255.
