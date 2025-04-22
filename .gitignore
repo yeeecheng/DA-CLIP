@@ -1,1 +1,9 @@
 weights/
+datasets/
+__pycache__/
+**/*.pyc
+*.safetensors
+./universal-image-restoration/data/__pycache__
+embeddings/
+**/*.png
+**/*.csv

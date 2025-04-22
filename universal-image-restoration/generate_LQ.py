@@ -17,18 +17,20 @@ def is_image_file(filename):
 # deg_type: noisy, jpeg
 # param: 50 for noise_level, 10 for jpeg compression quality
 def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./dataset/", epochs= 2, mode= "train"):
-    
+
     print("#"*20)
     print(f"\nSource DIR: {source_dir}\nMode: {mode}\nDegradation type: {deg_type}\nParam range: {param}\nEpochs: {epochs}\nSave Path: {save_path}/{mode}/{deg_type}\n")
     print("#"*20)
     # set data dir
 
-    for p in range(10,81,10):
-        
-        p = p / 10.0 if deg_type == "blur" else p
+    for p in range(param[0], param[1] + 1, param[2]):
+
+        p = p / 10.0 if deg_type in ["blur", "resize"] else p
+
+        print(f"param: {p}")
         savedir_GT = f"{save_path}/{mode}/{deg_type}{p}/GT"
         savedir_LQ = f"{save_path}/{mode}/{deg_type}{p}/LQ"
-        
+
         os.makedirs(savedir_GT, exist_ok= True)
         os.makedirs(savedir_LQ, exist_ok= True)
 
@@ -37,7 +39,7 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
 
         degraded_prompts = {}
 
-        
+
         for epoch in range(epochs):
             # prepare data with augementation
             progress_bar = tqdm(range(num_files), dynamic_ncols=True)
@@ -47,15 +49,15 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
                 # read image
                 image = cv2.imread(filename)
                 # crop to 512x512
-                image_GT = match_dim(image, (512, 512), "random")
+                image_GT = match_dim(image, (512, 512), "crop")
                 # random param
                 if deg_type == "blur":
                     # rand_num = random.randint(param[0], param[1])
-                    rand_num = p / 10
-                    rand_num = rand_num + 1 if rand_num % 2 == 0 else rand_num
+                    rand_num = p
+                    # rand_num = rand_num + 1 if rand_num % 2 == 0 else rand_num
                 elif deg_type == "resize":
                     rand_num = round(random.uniform(param[0], param[1]), 1)
-                    rand_num = float(p * 0.1)
+                    rand_num = p
                 elif deg_type in ["noisy", "jpeg"]:
                     rand_num = random.randint(param[0], param[1])
                     rand_num = p
@@ -63,7 +65,7 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
                 # degraded it
                 if deg_type != "random":
                     image_LQ = (degrade(image_GT / 255., deg_type, rand_num) * 255).astype(np.uint8)
-                    # save 
+                    # save
                     degraded_prompt = f"{deg_type} with parameter {rand_num}"
                     # degraded_prompt = f"an image with {deg_type}"
                 else :
@@ -85,26 +87,29 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
 
 def setting_param():
     param = dict()
-    param["noisy"] = [5, 40]
-    param["resize"] = [0.5, 4]
-    param["blur"] = [5, 40]
-    param["jpeg"] = [30, 92]
+    # 5, 40, 5: noise level
+    param["noisy"] = [10, 60, 10]
+    # 5, 40, 5: resize scale
+    param["resize"] = [5, 40, 5]
+    # 5, 40, 5: blur sigma x
+    param["blur"] = [45, 45, 5]
+    # 10, 80, 10: jpeg quality
+    param["jpeg"] = [10, 80, 10]
     param["random"] = None
-    # 2,41,5: blur sigma x
     return param
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--source_dir', default= ["/mnt/hdd7/yicheng/daclip-uir/datasets/lsdir"], type= list)
-    parser.add_argument('--save_path', default= "./datasets_1/train", type= str)
-    parser.add_argument('--deg_type', choices= ["noisy", "resize", "blur", "jpeg", "random"], default= "random", type= str)
-    parser.add_argument('--mode', choices= ["train", "val"], default= "val", type= str)
+    parser.add_argument('--source_dir', default= ["/mnt/hdd5/yicheng/datasets/lsdir"], type= list)
+    parser.add_argument('--save_path', default= "./datasets/lsdir", type= str)
+    parser.add_argument('--deg_type', choices= ["noisy", "resize", "blur", "jpeg", "random"], default= "blur", type= str)
+    parser.add_argument('--mode', choices= ["train", "val"], default= "test_center_crop", type= str)
     parser.add_argument('--epochs', default= 1, type= int)
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
-    
+
     args = parse_args()
     param =  setting_param()
     generate_LQ(source_dir= args.source_dir, deg_type= args.deg_type, param= param[args.deg_type], save_path= args.save_path, epochs= args.epochs, mode= args.mode)

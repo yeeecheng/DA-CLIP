@@ -89,28 +89,24 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, resiual_images = batch
-        # images, texts, gt_images= batch
-        # print("texts", texts.shape)
-        # print("pos_text", pos_text.shape)
-        # print("neg text", neg_texts.shape)
-        # print("deg_neg_txt", deg_neg_texts.shape)
-        images = images.to(device=device, dtype=input_dtype, non_blocking=True)
-        texts = texts.to(device=device, non_blocking=True)
-        gt_images = gt_images.to(device=device, dtype=input_dtype, non_blocking=True)
-        resiual_images = resiual_images.to(device=device, dtype=input_dtype, non_blocking=True)
+        # images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, deg_label = batch
+        images, texts= batch
 
-        pos_text = pos_text.to(device=device, non_blocking=True)
-        neg_texts = neg_texts.to(device=device, non_blocking=True)
-        deg_neg_texts = deg_neg_texts.to(device=device, dtype=input_dtype, non_blocking=True)
+        # images = images.to(device=device, dtype=input_dtype, non_blocking=True)
+        # texts = texts.to(device=device, non_blocking=True)
+        # gt_images = gt_images.to(device=device, dtype=input_dtype, non_blocking=True)
+        # pos_text = pos_text.to(device=device, non_blocking=True)
+        # neg_texts = neg_texts.to(device=device, non_blocking=True)
+        # deg_neg_texts = deg_neg_texts.to(device=device, dtype=input_dtype, non_blocking=True)
+        # deg_label = deg_label.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         if args.accum_freq == 1:
             with autocast():
-                model_out = model(images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, resiual_images)
-                # model_out = model(images, texts, gt_images)
+                # model_out = model(images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, deg_label)
+                model_out = model(images, texts)
                 logit_scale = model_out["logit_scale"]
                 if args.distill:
                     with torch.no_grad():

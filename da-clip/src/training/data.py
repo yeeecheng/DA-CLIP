@@ -68,78 +68,76 @@ class CsvDataset(Dataset):
         }
         self.degradation_types = list(self.neg_text_pool.keys())
 
-
-        self.num_to_word = {
-            '0.5': 'zero point five', '1': 'one', '2': 'two', '3': 'three',
-            '4': 'four', '5': 'five', '6': 'six', '7': 'seven', '8': 'eight',
-            '9': 'nine', '10': 'ten', '11': 'eleven', '12': 'twelve', '13': 'thirteen',
-            '14': 'fourteen', '15': 'fifteen', '16': 'sixteen', '17': 'seventeen',
-            '18': 'eighteen', '19': 'nineteen', '20': 'twenty', '21': 'twenty-one',
-            '22': 'twenty-two', '23': 'twenty-three', '24': 'twenty-four', '25': 'twenty-five',
-            '26': 'twenty-six', '27': 'twenty-seven', '28': 'twenty-eight', '29': 'twenty-nine',
-            '30': 'thirty', '31': 'thirty-one', '32': 'thirty-two', '33': 'thirty-three',
-            '34': 'thirty-four', '35': 'thirty-five', '36': 'thirty-six', '37': 'thirty-seven',
-            '38': 'thirty-eight', '39': 'thirty-nine', '40': 'forty'
-        }
+        base_classes = [
+            'blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0',
+            'jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80',
+            'noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40',
+            'resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0'
+        ]
+        self.type_to_id = {name: idx for idx, name in enumerate(base_classes)}
 
     def __len__(self):
         return len(self.captions)
 
-    def replace_number_with_word(self, text):
-
-        pattern = r'\b(?:0\.5|[1-9]|[1-3][0-9]|40)\b'
-
-        # 替換函數
-        def replacer(match):
-            return self.num_to_word[match.group(0)]
-
-        # 執行替換
-        result = re.sub(pattern, replacer, text)
-
-        return result
-
-
     def __getitem__(self, idx):
-
-        # load image and get text (content & degradation)
         images = Image.open(str(self.images[idx]))
         texts = str(self.captions[idx])
-        gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
 
         if self.da:
-            # preprocessing
             caption, degradation = texts.split('| ')
-            # degradation = self.replace_number_with_word(degradation)
-            # print(degradation)
             caption = self.tokenize([caption])[0]
             degradation = self.tokenize([degradation])[0]
             texts = torch.cat([caption, degradation], dim=0)
+            # texts = torch.cat([caption, caption], dim=0)
 
             if self.crop and random.random() > 0.2:
                 images = random_crop(images)
         else:
             texts = self.tokenize([texts])[0]
 
-        # data transform
         images = self.transforms(images)
-        gt_images = self.transforms(gt_images)
 
-        # get the positive and negative sample
-        sample = self.samples[idx]
-        pos_text = degradation
+        return images, texts
 
-        # get numerail negative text samples
-        neg_texts = self.neg_text_pool[sample['type']]
-        # get degradation negative sample
-        neg_types = [t for t in self.degradation_types  if t != sample['type']]
-        deg_neg_type = random.choice(neg_types)
-        deg_neg_text = self.neg_text_pool[deg_neg_type]
+    # def __getitem__(self, idx):
 
-        resiual_images = gt_images - images
+    #     # load image and get text (content & degradation)
+    #     images = Image.open(str(self.images[idx]))
+    #     texts = str(self.captions[idx])
+    #     gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
 
+    #     if self.da:
+    #         # preprocessing
+    #         caption, degradation = texts.split('| ')
+    #         caption = self.tokenize([caption])[0]
+    #         degradation = self.tokenize([degradation])[0]
+    #         texts = torch.cat([caption, degradation], dim=0)
 
-        return images, texts, gt_images, pos_text, neg_texts, deg_neg_text, resiual_images
-        # return images, texts, gt_images
+    #         if self.crop and random.random() > 0.2:
+    #             images = random_crop(images)
+    #     else:
+    #         texts = self.tokenize([texts])[0]
+
+    #     # data transform
+    #     images = self.transforms(images)
+    #     gt_images = self.transforms(gt_images)
+
+    #     # get the positive and negative sample
+    #     sample = self.samples[idx]
+    #     pos_text = degradation
+
+    #     # get numerail negative text samples
+    #     neg_texts = self.neg_text_pool[sample['type']]
+    #     # get degradation negative sample
+    #     neg_types = [t for t in self.degradation_types  if t != sample['type']]
+    #     deg_neg_type = random.choice(neg_types)
+    #     deg_neg_text = self.neg_text_pool[deg_neg_type]
+
+    #     d_type, _, val = sample['degradation'].strip().partition('with parameter ')
+    #     deg_label = self.type_to_id[d_type.strip()+val]
+
+    #     return images, texts, gt_images, pos_text, neg_texts, deg_neg_text, deg_label
+
 
 
 class SharedEpoch:

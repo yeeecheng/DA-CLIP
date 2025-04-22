@@ -15,7 +15,7 @@ for deg in degradation_dirs:
     csv_path = os.path.join(root_dir, deg, "daclip_val.csv")
     if os.path.exists(csv_path):
         df = pd.read_csv(csv_path, sep='\t')
-    
+
         future_df["filepath"].extend(df["filepath"].tolist())
         future_df["title"].extend(df["title"].tolist())
     else:

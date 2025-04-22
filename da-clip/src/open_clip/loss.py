@@ -200,33 +200,12 @@ class DaClipLoss(ClipLoss):
             use_horovod=use_horovod
         )
         self.l1_loss_fn = nn.L1Loss()
+        # self.l2_loss_fn = nn.MSELoss()
 
         self.l1_loss_weight = l1_loss_weight
         self.num_loss_weight = num_loss_weight
+        self.intra_degra_weight = 0.5
         self.temperature = temperature
-
-    # def numerical_contrastive_loss(self, image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features):
-    #     """
-    #     img_emb: [B, D]
-    #     anchor_text_emb: [B, D]
-    #     num_neg_text_emb: [B, N_neg, D]
-    #     deg_neg_text_emb: [B, N_neg, D]
-    #     """
-    #     # print("image_degra_features", image_degra_features.shape)
-    #     # print("pos_text_features", pos_text_features.shape)
-    #     # print("neg_texts_features", neg_texts_features.shape)
-    #     # print("deg_neg_text_features", deg_neg_text_features.shape)
-
-    #     pos_sim = F.cosine_similarity(image_degra_features, pos_text_features, dim=-1).unsqueeze(1)  # [B,1]
-    #     num_neg_sim = torch.bmm(neg_texts_features, image_degra_features.unsqueeze(2)).squeeze(2)  # [B,N_neg]
-    #     deg_neg_sim = torch.bmm(deg_neg_text_features, image_degra_features.unsqueeze(2)).squeeze(2)  # [B,1]
-
-    #     logits = torch.cat([pos_sim, num_neg_sim, deg_neg_sim], dim=1) / self.temperature
-
-    #     labels = torch.zeros(image_degra_features.size(0), dtype=torch.long, device=image_degra_features.device)
-
-    #     loss = F.cross_entropy(logits, labels)
-    #     return loss
 
     def numerical_contrastive_loss(self, image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features):
         B, D = image_degra_features.shape
@@ -247,56 +226,92 @@ class DaClipLoss(ClipLoss):
         loss = (loss_img2text + loss_text2img) / 2.0
         return loss
 
+    def degradation_feature_contrastive_loss(self, image_degra_features, labels):
+        B = image_degra_features.size(0)
+
+        # Normalize features
+        features = F.normalize(image_degra_features, dim=1)
+
+        # Cosine similarity (B x B)
+        similarity_matrix = features @ features.T
+
+        # Build label mask (positive pairs only)
+        labels = labels.view(-1, 1)
+        mask = torch.eq(labels, labels.T).float()
+
+        # Remove self-similarity
+        logits = similarity_matrix / self.temperature
+        logits_mask = torch.ones_like(mask) - torch.eye(B, device=features.device)
+        mask = mask * logits_mask
+
+        # Log-softmax
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
+
+        # Mean log-likelihood over positive pairs
+        mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-8)
+        loss = -mean_log_prob_pos.mean()
+        return loss
 
     def forward(
             self,
             image_features,
             text_features,
             image_degra_features,
+            text_degra_features,
             logit_scale,
-            output_dict=False,
-            gt_image_features=None,
-            resiual_image_features=None,
-            # degradation_features=None,
-            pos_text_features=None,
-            neg_texts_features=None,
-            deg_neg_text_features=None
-
+            output_dict=False
     ):
-
         clip_loss = super().forward(image_features, text_features, logit_scale)
-        # degra_loss = super().forward(image_degra_features, degradation_features, logit_scale)
-        num_contrastive_loss = self.numerical_contrastive_loss(
-            image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features
-        )
-
-        gt_l1_loss = 0.0
-        resiual_ls_loss = 0.0
-        if gt_image_features is not None:
-            gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
-            gt_l1_loss = self.l1_loss_weight * gt_l1_loss
-
-        if resiual_image_features is not None:
-            resiual_ls_loss = self.l1_loss_fn(image_degra_features, resiual_image_features)
-            resiual_ls_loss = resiual_ls_loss
-
-        # if output_dict:
-        #     return {"contrastive_loss": clip_loss,
-        #             "degra_loss": degra_loss,
-        #             "l1_loss": l1_loss,
-        #             }
-        # return clip_loss, degra_loss, l1_loss
-
+        degra_loss = super().forward(image_degra_features, text_degra_features, logit_scale)
 
         if output_dict:
-            return {"contrastive_loss": clip_loss,
-                    "degra_loss": num_contrastive_loss,
-                    "gt_l1_loss": gt_l1_loss,
-                    "resiual_ls_loss": resiual_ls_loss
-                    }
+            return {"contrastive_loss": clip_loss, "degra_loss": degra_loss}
 
-        return clip_loss, num_contrastive_loss, gt_l1_loss, resiual_ls_loss
-        # , self.lambda_img_triplet * img_triplet_loss
+        return clip_loss, degra_loss
+
+    # def forward(
+    #         self,
+    #         image_features,
+    #         text_features,
+    #         image_degra_features,
+    #         logit_scale,
+    #         output_dict=False,
+    #         gt_image_features=None,
+    #         pos_text_features=None,
+    #         neg_texts_features=None,
+    #         deg_neg_text_features=None,
+    #         deg_label=None,
+    # ):
+    #     # CLIP-style contrastive loss
+    #     clip_loss = super().forward(image_features, text_features, logit_scale)
+
+    #     # Text ↔ degradation feature contrastive loss
+    #     num_contrastive_loss = self.numerical_contrastive_loss(
+    #         image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features
+    #     )
+
+    #     # GT ↔ image feature alignment loss
+    #     gt_l1_loss = 0.0
+    #     if gt_image_features is not None:
+    #         gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
+    #         gt_l1_loss = self.l1_loss_weight * gt_l1_loss
+
+    #     # Degraded feature ↔ degraded feature contrastive loss
+    #     feat_feat_loss = 0.0
+    #     if deg_label is not None:
+    #         feat_feat_loss = self.degradation_feature_contrastive_loss(image_degra_features, deg_label)
+    #         feat_feat_loss = self.intra_degra_weight * feat_feat_loss
+
+    #     if output_dict:
+    #         return {
+    #             "contrastive_loss": clip_loss,
+    #             "degra_loss": num_contrastive_loss,
+    #             "gt_l1_loss": gt_l1_loss,
+    #             "feat_feat_loss": feat_feat_loss
+    #         }
+
+    #     return clip_loss, num_contrastive_loss, gt_l1_loss, feat_feat_loss
 
 
 class DistillClipLoss(ClipLoss):

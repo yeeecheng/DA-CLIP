@@ -8,16 +8,16 @@ from sklearn.manifold import TSNE
 from tqdm import tqdm
 
 # 設定參數
-dataset_path = "./datasets/test/train"
-classes = [c for c in os.listdir(dataset_path)]
+dataset_path = "/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/lsdir/test"
+classes = [c for c in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, c))]
 print(classes)
 batch_size = 256  # 每次處理的圖片數量
 
 # 加載模型
-checkpoint = '../weights/wild-daclip_ViT-L-14.pt'
-model, preprocess = open_clip.create_model_from_pretrained('daclip_ViT-L-14', pretrained=checkpoint)
-model.eval()  # 設置為評估模式
-tokenizer = open_clip.get_tokenizer('ViT-L-14')
+checkpoint = '/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250421235346/checkpoints/epoch_187.pt'
+model, preprocess = open_clip.create_model_from_pretrained('daclip_ViT-B-32', pretrained=checkpoint)
+model.eval()
+tokenizer = open_clip.get_tokenizer('ViT-B-32')
 
 # 移到 GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,7 +35,7 @@ os.makedirs(embedding_save_path, exist_ok=True)
 for class_index, class_name in enumerate(classes):
     print(f"Processing {class_name}...")
     class_path = os.path.join(dataset_path, class_name, "LQ")
-    
+
     class_embeddings = []
     batch_images = []
     batch_filenames = []
