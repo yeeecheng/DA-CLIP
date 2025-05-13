@@ -7,19 +7,16 @@ from PIL import Image
 from sklearn.manifold import TSNE
 from tqdm import tqdm
 
-# 設定參數
 dataset_path = "/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/lsdir/test"
 classes = [c for c in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, c))]
 print(classes)
 batch_size = 256  # 每次處理的圖片數量
 
-# 加載模型
-checkpoint = '/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250421235346/checkpoints/epoch_187.pt'
+checkpoint = '/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-intra_type_loss_with_max_dist15/checkpoints/epoch_199.pt'
 model, preprocess = open_clip.create_model_from_pretrained('daclip_ViT-B-32', pretrained=checkpoint)
 model.eval()
 tokenizer = open_clip.get_tokenizer('ViT-B-32')
 
-# 移到 GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
@@ -61,7 +58,6 @@ for class_index, class_name in enumerate(classes):
                 class_embeddings.extend(embeddings_array)
                 labels.extend([class_index] * len(batch_filenames))
 
-                # 清空 batch
                 batch_images.clear()
                 batch_filenames.clear()
 
@@ -102,7 +98,7 @@ embeddings_2d = tsne.fit_transform(image_embeddings)
 plt.figure(figsize=(8, 6))
 for class_index, class_name in enumerate(classes):
     indices = labels == class_index
-    plt.scatter(embeddings_2d[indices, 0], embeddings_2d[indices, 1], label=class_name, alpha=0.7)
+    plt.scatter(embeddings_2d[indices, 0], embeddings_2d[indices, 1], label=class_name, cmap='viridis', alpha=0.7)
 
 plt.legend()
 plt.title("t-SNE Visualization of Image Embeddings")

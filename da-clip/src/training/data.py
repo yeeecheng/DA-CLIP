@@ -60,84 +60,136 @@ class CsvDataset(Dataset):
                 'type': d_type.strip()
             })
 
+        self.degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
+        self.prompt_to_id = {}
+        self.text_feat_bank = {}
+        self.bin_center_bank = {}
+
+        self.tokenized_level_prompts = []  # all semantic prompts for text encoder
+
+        for d_type in self.degradation_types:
+            if d_type in ['blur', 'resize']:
+                levels = np.arange(0.5, 4.1, 0.5)
+            elif d_type == 'noisy':
+                levels = np.arange(5, 41, 5)
+            elif d_type == 'jpeg':
+                levels = np.arange(10, 81, 10)
+            else:
+                continue
+
+            # make bins: [(start, end), ...]
+            bins = list(zip(levels[:-1], levels[1:]))
+            centers = [(s + e) / 2 for s, e in bins]
+            # self.bin_center_bank['blur'] → tensor([0.75, 1.25, ..., 3.75])
+            self.bin_center_bank[d_type] = torch.tensor(centers, dtype=torch.float32)
+
+            # semantic prompts
+            if d_type == 'blur':
+                descriptions = [
+                    "almost sharp", "slightly blurry", "mildly blurry", "moderately blurry",
+                    "noticeably blurry", "heavily blurred", "extremely blurry"
+                ]
+            elif d_type == 'resize':
+                descriptions = [
+                    "nearly original size", "slightly downscaled", "noticeably resized",
+                    "significantly downscaled", "severely downscaled", "extremely small",
+                    "barely visible size"
+                ]
+            elif d_type == 'noisy':
+                descriptions = [
+                    "almost noise-free", "slightly noisy", "mildly noisy", "moderately noisy",
+                    "noticeably noisy", "heavily noisy", "extremely noisy"
+                ]
+            elif d_type == 'jpeg':
+                descriptions = [
+                    "high quality jpeg", "slightly compressed jpeg", "noticeably compressed jpeg",
+                    "moderately compressed jpeg", "heavily compressed jpeg", "very low quality jpeg",
+                    "extremely compressed jpeg"
+                ]
+            else:
+                descriptions = [f"{d_type} bin {i}" for i in range(len(centers))]
+
+
+            # self.semantic_prompt_bank['jpeg'] → ["high quality jpeg", ...]
+            tokens = [self.tokenize(p)[0] for p in descriptions[:len(centers)]]
+            self.text_feat_bank[d_type] = torch.stack(tokens)
+            # self.text_feat_bank[d_type] = [self.tokenize(p)[0] for p in descriptions[:len(centers)]]
+
+        self.deg_type_to_id = {'blur': 0, 'noisy': 1, 'resize': 2, 'jpeg': 3}
+
         self.neg_text_pool = {
             "blur": torch.cat([self.tokenize([f"blur with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
             "noisy": torch.cat([self.tokenize([f"noisy with parameter {v}"])[0] for v in range(1, 41,1)], dim=0),
             "resize": torch.cat([self.tokenize([f"resize with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
-            "jpeg": torch.cat([self.tokenize([f"jpeg with parameter {v}"])[0] for v in range(1, 41,1)], dim=0)
+            "jpeg": torch.cat([self.tokenize([f"jpeg with parameter {v}"])[0] for v in range(1, 81, 2)], dim=0)
         }
-        self.degradation_types = list(self.neg_text_pool.keys())
 
-        base_classes = [
-            'blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0',
-            'jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80',
-            'noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40',
-            'resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0'
-        ]
-        self.type_to_id = {name: idx for idx, name in enumerate(base_classes)}
+
+
+        # self.degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
+        # self.tokenized_level_prompts = []
+        # self.prompt_to_id = {}
+        # idx = 0
+
+        # for d_type in self.degradation_types:
+        #     if d_type in ['blur', 'resize']:
+        #         levels = np.arange(0.5, 4.1, 0.5)  # 0.5, 1.0, ..., 4.0
+        #     elif d_type == 'noisy':
+        #         levels = range(5, 41, 5)           # 5, 10, ..., 40
+        #     elif d_type == 'jpeg':
+        #         levels = range(10, 81, 10)         # 10, 20, ..., 80
+        #     else:
+        #         levels = []
+
+        #     for val in levels:
+        #         prompt = f"{d_type} with parameter {val}" if isinstance(val, int) else f"{d_type} with parameter {round(val, 1)}"
+        #         self.prompt_to_id[prompt] = idx
+        #         idx += 1
+        #         self.tokenized_level_prompts.append(prompt)
+
+        # self.deg_type_to_id = {'blur': 0, 'noisy': 1, 'resize': 2, 'jpeg': 3}
+
 
     def __len__(self):
         return len(self.captions)
 
     def __getitem__(self, idx):
+
+        # load image and get text (content & degradation)
         images = Image.open(str(self.images[idx]))
         texts = str(self.captions[idx])
+        gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
+        sample = self.samples[idx]
+        # prompt = sample['degradation'].strip()
+        # deg_label = self.prompt_to_id[prompt]
+        deg_type = self.deg_type_to_id[sample['type']]
+        gt_val = sample["value"]
 
         if self.da:
+            # preprocessing
             caption, degradation = texts.split('| ')
             caption = self.tokenize([caption])[0]
             degradation = self.tokenize([degradation])[0]
             texts = torch.cat([caption, degradation], dim=0)
-            # texts = torch.cat([caption, caption], dim=0)
-
             if self.crop and random.random() > 0.2:
                 images = random_crop(images)
         else:
             texts = self.tokenize([texts])[0]
 
+        # data transform
         images = self.transforms(images)
+        gt_images = self.transforms(gt_images)
 
-        return images, texts
+        neg_texts = self.neg_text_pool[sample['type']]
+        neg_types = [t for t in self.degradation_types  if t != sample['type']]
 
-    # def __getitem__(self, idx):
+        deg_neg_text = []
+        for neg_type in neg_types:
+            deg_neg_text.extend(self.neg_text_pool[neg_type])
 
-    #     # load image and get text (content & degradation)
-    #     images = Image.open(str(self.images[idx]))
-    #     texts = str(self.captions[idx])
-    #     gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
+        deg_neg_text = torch.stack(deg_neg_text, dim=0)
 
-    #     if self.da:
-    #         # preprocessing
-    #         caption, degradation = texts.split('| ')
-    #         caption = self.tokenize([caption])[0]
-    #         degradation = self.tokenize([degradation])[0]
-    #         texts = torch.cat([caption, degradation], dim=0)
-
-    #         if self.crop and random.random() > 0.2:
-    #             images = random_crop(images)
-    #     else:
-    #         texts = self.tokenize([texts])[0]
-
-    #     # data transform
-    #     images = self.transforms(images)
-    #     gt_images = self.transforms(gt_images)
-
-    #     # get the positive and negative sample
-    #     sample = self.samples[idx]
-    #     pos_text = degradation
-
-    #     # get numerail negative text samples
-    #     neg_texts = self.neg_text_pool[sample['type']]
-    #     # get degradation negative sample
-    #     neg_types = [t for t in self.degradation_types  if t != sample['type']]
-    #     deg_neg_type = random.choice(neg_types)
-    #     deg_neg_text = self.neg_text_pool[deg_neg_type]
-
-    #     d_type, _, val = sample['degradation'].strip().partition('with parameter ')
-    #     deg_label = self.type_to_id[d_type.strip()+val]
-
-    #     return images, texts, gt_images, pos_text, neg_texts, deg_neg_text, deg_label
-
+        return images, texts, gt_images, deg_type, gt_val, self.bin_center_bank[sample['type']], self.text_feat_bank[sample['type']], neg_texts, deg_neg_text
 
 
 class SharedEpoch:

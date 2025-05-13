@@ -6,7 +6,7 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
 # === 讀取儲存的資料 ===
-embedding_path = "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250421171526/embeddings"
+embedding_path = "./embeddings"
 embeddings = np.load(os.path.join(embedding_path, "all_embeddings.npy"))
 labels = np.load(os.path.join(embedding_path, "labels.npy"))
 
@@ -47,7 +47,7 @@ for base in base_groups:
 # === PCA + t-SNE 降維 ===
 pca = PCA(n_components=50)
 embeddings_pca = pca.fit_transform(embeddings)
-tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+tsne = TSNE(n_components=2, perplexity=30, random_state=42 )
 embeddings_2d = tsne.fit_transform(embeddings_pca)
 
 # === 繪圖 ===
@@ -63,7 +63,7 @@ for base, class_list in base_groups.items():
         y = embeddings_2d[indices, 1]
         alpha = 0.3 + 0.7 * (rank / (total - 1))  # 從 0.3~1.0 線性分布
 
-        plt.scatter(x, y, s=10, color=base_color, alpha=alpha, label=class_name)
+        plt.scatter(x, y, s=10, color=base_color, alpha=alpha, label=class_name, cmap='viridis')
 
 # === 圖例只放代表性項目（每個 base 選一個）===
 handles = []

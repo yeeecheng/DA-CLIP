@@ -24,6 +24,9 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
     # set data dir
 
     for p in range(param[0], param[1] + 1, param[2]):
+        
+        if p % 10 == 0:
+            continue
 
         p = p / 10.0 if deg_type in ["blur", "resize"] else p
 
@@ -88,22 +91,22 @@ def generate_LQ(source_dir=[], deg_type='blur', param=[10, 15], save_path= "./da
 def setting_param():
     param = dict()
     # 5, 40, 5: noise level
-    param["noisy"] = [10, 60, 10]
+    param["noisy"] = [1, 40, 1]
     # 5, 40, 5: resize scale
-    param["resize"] = [5, 40, 5]
+    param["resize"] = [1, 40, 1]
     # 5, 40, 5: blur sigma x
-    param["blur"] = [45, 45, 5]
+    param["blur"] = [1, 40, 1]
     # 10, 80, 10: jpeg quality
-    param["jpeg"] = [10, 80, 10]
+    param["jpeg"] = [10, 80, 1]
     param["random"] = None
     return param
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--source_dir', default= ["/mnt/hdd5/yicheng/datasets/lsdir"], type= list)
-    parser.add_argument('--save_path', default= "./datasets/lsdir", type= str)
-    parser.add_argument('--deg_type', choices= ["noisy", "resize", "blur", "jpeg", "random"], default= "blur", type= str)
-    parser.add_argument('--mode', choices= ["train", "val"], default= "test_center_crop", type= str)
+    parser.add_argument('--source_dir', default= ["/mnt/hdd5/yicheng/datasets/DIV2K_train_HR"], type= list)
+    parser.add_argument('--save_path', default= "./datasets/DIV2K_HR", type= str)
+    parser.add_argument('--deg_type', choices= ["noisy", "resize", "blur", "jpeg", "random"], default= "jpeg", type= str)
+    parser.add_argument('--mode', choices= ["train", "val"], default= "train", type= str)
     parser.add_argument('--epochs', default= 1, type= int)
     args = parser.parse_args()
     return args

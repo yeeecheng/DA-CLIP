@@ -187,8 +187,8 @@ class DaClipLoss(ClipLoss):
             rank=0,
             world_size=1,
             use_horovod=False,
-            l1_loss_weight=0.1,
-            num_loss_weight=0.5,
+            intra_type_contrastive_loss_weight=1.0,
+            inter_type_contrastive_loss_weight=1.0,
             temperature=0.07
     ):
         super().__init__(
@@ -199,120 +199,244 @@ class DaClipLoss(ClipLoss):
             world_size=world_size,
             use_horovod=use_horovod
         )
-        self.l1_loss_fn = nn.L1Loss()
-        # self.l2_loss_fn = nn.MSELoss()
-
-        self.l1_loss_weight = l1_loss_weight
-        self.num_loss_weight = num_loss_weight
-        self.intra_degra_weight = 0.5
+        self.l1_loss_fn = nn.L1Loss(reduction="mean")
+        self.l1_loss_weight = 0.1
+        self.reg_l1_loss_fn = nn.L1Loss(reduction="mean")
+        self.intra_type_contrastive_loss_weight = intra_type_contrastive_loss_weight
+        self.inter_type_contrastive_loss_weight = inter_type_contrastive_loss_weight
         self.temperature = temperature
 
-    def numerical_contrastive_loss(self, image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features):
+        self.type_ranges = {
+            '0': (0.5, 4.0),
+            '1': (5.0, 40.0),
+            '2': (0.5, 4.0),
+            '3': (10.0, 80.0),
+        }
+
+        
+
+    # def compute_intra_type_contrastive_loss(self, image_degra_features, text_degra_features, deg_label, deg_type):
+
+    #     loss = 0.0
+    #     B, D = image_degra_features.shape
+    #     N = text_degra_features.shape[0]
+
+    #     # Cosine similarity (B x B)
+    #     sim = (image_degra_features @ text_degra_features.T) / self.temperature  # f(z_i, w_j)
+    #     sim_exp = torch.exp(sim)  # shape (B, B)
+
+    #     # label distance matrix (|y_i - y_j|): (B, B)
+    #     levels_per_type = 8
+    #     local_label = 2 * (deg_label - deg_type * levels_per_type)  # (B,)
+    #     label_dist = torch.abs(local_label.unsqueeze(1) - local_label.unsqueeze(0)).float()
+
+    #     # type mask (only compare samples of same degradation type)
+    #     type_mask = (deg_type.unsqueeze(1) == deg_type.unsqueeze(0))  # shape (B, B), bool
+
+    #     # Compute λ_{i,j} = softmax(β * d_{i,j}) only within same type
+    #     raw_weights = torch.exp(self.beta * label_dist) * type_mask.float()  # (B, B)
+    #     weights = raw_weights / (raw_weights.sum(dim=1, keepdim=True) + 1e-8)  # normalized across j
+
+    #     eye = torch.eye(B, device=sim.device)
+    #     mask = 1.0 - eye  # remove diagonal self-pairs from denominator
+
+    #     # Diagonal: matched sim
+    #     pos_sim = sim_exp.diag()
+    #     denom = (weights * sim_exp * mask).sum(dim=1) + pos_sim
+
+    #     loss = -torch.log(pos_sim / (denom + 1e-8))
+
+    #     return loss.mean()
+
+    # def compute_inter_type_contrastive_loss(self, image_degra_features, deg_type, margin=0.2):
+    #     unique_types = deg_type.unique()
+    #     centers = []
+
+    #     # 1. calculate each type center
+    #     for t in unique_types:
+    #         mask = (deg_type == t)
+    #         if mask.sum() > 0:
+    #             center = image_degra_features[mask].mean(dim=0, keepdim=True)
+    #             centers.append(center)
+
+    #     centers = torch.cat(centers, dim=0)  # (T, D)
+    #     centers = F.normalize(centers, dim=-1)  # cosine similarity
+
+    #     # 2. calculate pairwise similarity
+    #     sim_matrix = centers @ centers.T  # (T, T)
+    #     T = sim_matrix.size(0)
+    #     eye = torch.eye(T, device=sim_matrix.device)
+    #     mask = 1.0 - eye  # (T, T), zero diagonal
+
+    #     # 3. apply margin-based repulsion
+    #     penalty = F.relu(sim_matrix - margin)  # only penalize when too similar
+    #     loss = (penalty * mask).sum() / (mask.sum() + 1e-8)
+
+    #     return loss
+
+    def numerical_contrastive_loss(self, image_degra_features, text_degra_features, neg_texts_features, deg_neg_text_features):
         B, D = image_degra_features.shape
         N_neg = neg_texts_features.size(1)
 
         text_features_all = torch.cat([
-            pos_text_features.unsqueeze(1), neg_texts_features, deg_neg_text_features
+            text_degra_features.unsqueeze(1), neg_texts_features, deg_neg_text_features
         ], dim=1)
 
         logits_img2text = torch.bmm(text_features_all, image_degra_features.unsqueeze(2)).squeeze(2) / self.temperature
         labels_img2text = torch.zeros(B, dtype=torch.long, device=image_degra_features.device)
         loss_img2text = F.cross_entropy(logits_img2text, labels_img2text)
 
-        logits_text2img = pos_text_features @ image_degra_features.T / self.temperature
+        logits_text2img = text_degra_features @ image_degra_features.T / self.temperature
         labels_text2img = torch.arange(B, dtype=torch.long, device=image_degra_features.device)
         loss_text2img = F.cross_entropy(logits_text2img, labels_text2img)
 
         loss = (loss_img2text + loss_text2img) / 2.0
         return loss
 
-    def degradation_feature_contrastive_loss(self, image_degra_features, labels):
-        B = image_degra_features.size(0)
+    def compute_fcrc_loss(self, image_degra_features, degraded_prompt_features, deg_val, bin_center_features, deg_type, beta=1.0):
 
-        # Normalize features
-        features = F.normalize(image_degra_features, dim=1)
+        device = image_degra_features.device
+        B, D = image_degra_features.shape
+        K = bin_center_features.shape[0]
 
-        # Cosine similarity (B x B)
-        similarity_matrix = features @ features.T
+        # Step 1: Find closest bin center for each deg_val
+        # (B, K) = |deg_val - bin_center|
+        # abs_diffs = torch.abs(deg_val.view(B, 1) - bin_center_features.view(1, K))  # (B, K)
+        abs_diffs = torch.abs(deg_val.unsqueeze(1) - bin_center_features)
+        bin_idx = torch.argmin(abs_diffs, dim=1)  # (B,)
+        selected_text_feat = degraded_prompt_features[torch.arange(B), bin_idx]   # (B, D)
 
-        # Build label mask (positive pairs only)
-        labels = labels.view(-1, 1)
-        mask = torch.eq(labels, labels.T).float()
+        # Step 2: Cosine similarity matrix (B, B)
+        sim_matrix = F.cosine_similarity(
+            image_degra_features.unsqueeze(1),  # (B, 1, D)
+            selected_text_feat.unsqueeze(0),    # (1, B, D)
+            dim=-1
+        )  # (B, B)
 
-        # Remove self-similarity
-        logits = similarity_matrix / self.temperature
-        logits_mask = torch.ones_like(mask) - torch.eye(B, device=features.device)
-        mask = mask * logits_mask
+        # Step 3: Soft contrastive scaling
+        sim_exp = torch.exp(sim_matrix / self.temperature)  # (B, B)
 
-        # Log-softmax
-        exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
+        # Step 4: Relative label distance (lambda weighting)
+        # dist = torch.abs(deg_val.view(B, 1) - deg_val.view(1, B))  # (B, B)
+        # normalize deg_val to [0, 1] within each type
+        norm_deg_val = torch.zeros_like(deg_val)
+        for t, (low, high) in self.type_ranges.items():
+            mask = (str(deg_type) == t)
+            norm_deg_val[mask] = (deg_val[mask] - low) / (high - low + 1e-8)
+        # compute same type mask
+        same_type_mask = (deg_type.view(B, 1) == deg_type.view(1, B)).float()
 
-        # Mean log-likelihood over positive pairs
-        mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-8)
-        loss = -mean_log_prob_pos.mean()
+        # compute pairwise distance
+        dist_same = torch.abs(norm_deg_val.view(B, 1) - norm_deg_val.view(1, B))  # [0, 1]
+        dist_diff = torch.ones_like(dist_same) * 1.5  # constant distance for different type (larger than max same-type dist)
+
+        # combine both
+        dist = same_type_mask * dist_same + (1.0 - same_type_mask) * dist_diff
+        
+        lambda_weight = dist * beta
+        lambda_weight = lambda_weight / (lambda_weight.sum(dim=1, keepdim=True) + 1e-8)  # (B, B)
+
+        # Step 5: Compute FCRC loss
+        pos = sim_exp.diag()  # (B,)
+        neg = (lambda_weight * sim_exp).sum(dim=1) - lambda_weight.diag() * pos
+        loss = -torch.log(pos / (pos + neg + 1e-6)).mean()
         return loss
+
+
+
+
+        # loss = 0.0
+
+        # B = image_degra_features.size(0)
+        # device = image_degra_features.device
+
+        # type_keys = list(degraded_prompt_feature.keys())
+        # text_feat_list = []
+
+        # for i in range(B):
+        #     type_idx = deg_type[i].item()
+        #     type_str = type_keys[type_idx]
+        #     bin_centers = bin_center_bank[type_str].to(device)  # (K,)
+        #     abs_diffs = torch.abs(bin_centers - deg_val[i])     # (K,)
+        #     bin_idx = torch.argmin(abs_diffs).item()            # int
+        #     text_feat_list.append(degraded_prompt_feature[type_str][bin_idx])  # (D,)
+
+        # text_feat = torch.stack(text_feat_list).to(device)  # (B, D)
+
+        # # Step 1: cosine similarity
+        # sim_matrix = F.cosine_similarity(image_degra_features.unsqueeze(1), text_feat.unsqueeze(0), dim=-1)  # (B, B)
+        # sim_exp = torch.exp(sim_matrix / self.temperature)  # (B, B)
+
+        # # Step 2: label distance
+        # dist = (deg_val.unsqueeze(1) - deg_val.unsqueeze(0)).abs()  # (B, B)
+        # lambda_weight = dist * beta
+        # lambda_weight = lambda_weight / (lambda_weight.sum(dim=1, keepdim=True) + 1e-8)
+
+        # # Step 3: compute loss
+        # pos = sim_exp.diag()  # (B,)
+        # neg = (lambda_weight * sim_exp).sum(dim=1) - lambda_weight.diag() * pos
+        # loss = -torch.log(pos / (pos + neg + 1e-6)).mean()
+        # return loss
+
 
     def forward(
             self,
             image_features,
             text_features,
-            image_degra_features,
-            text_degra_features,
             logit_scale,
-            output_dict=False
+            output_dict=False,
+            image_degra_features=None,
+            gt_image_features=None,
+            text_degra_features=None,
+            # deg_label=None,
+            deg_type=None,
+            gt_val= None,
+            degraded_prompt_features=None,
+            bin_center_features=None,
+            pred=None,
+            deg_neg_text_features=None,
+            neg_texts_features=None,
+
     ):
+        # CLIP-style contrastive loss
         clip_loss = super().forward(image_features, text_features, logit_scale)
-        degra_loss = super().forward(image_degra_features, text_degra_features, logit_scale)
+
+        # GT ↔ image feature alignment loss
+        gt_l1_loss = 0.0
+        if gt_image_features is not None:
+            gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
+            gt_l1_loss = self.l1_loss_weight * gt_l1_loss
+
+        # regression l1 loss
+        reg_ls_loss = 0.0
+        if gt_val is not None:
+            reg_ls_loss = self.reg_l1_loss_fn(pred, gt_val)
+
+        fcrc_loss = 0.0
+        fcrc_loss = self.compute_fcrc_loss(image_degra_features, degraded_prompt_features, gt_val, bin_center_features, deg_type)
+
+
+        # Text ↔ degradation feature contrastive loss
+        num_contrastive_loss = self.numerical_contrastive_loss(
+            image_degra_features, text_degra_features, neg_texts_features, deg_neg_text_features
+        )
+
+        # intra_type_contrastive_loss = 0.0
+        # intra_type_contrastive_loss = self.intra_type_contrastive_loss_weight * self.compute_intra_type_contrastive_loss(image_degra_features, text_degra_features, deg_label, deg_type)
+
+        # inter_type_contrastive_loss = 0.0
+        # inter_type_contrastive_loss = self.inter_type_contrastive_loss_weight * self.compute_inter_type_contrastive_loss(image_degra_features, deg_type)
 
         if output_dict:
-            return {"contrastive_loss": clip_loss, "degra_loss": degra_loss}
-
-        return clip_loss, degra_loss
-
-    # def forward(
-    #         self,
-    #         image_features,
-    #         text_features,
-    #         image_degra_features,
-    #         logit_scale,
-    #         output_dict=False,
-    #         gt_image_features=None,
-    #         pos_text_features=None,
-    #         neg_texts_features=None,
-    #         deg_neg_text_features=None,
-    #         deg_label=None,
-    # ):
-    #     # CLIP-style contrastive loss
-    #     clip_loss = super().forward(image_features, text_features, logit_scale)
-
-    #     # Text ↔ degradation feature contrastive loss
-    #     num_contrastive_loss = self.numerical_contrastive_loss(
-    #         image_degra_features, pos_text_features, neg_texts_features, deg_neg_text_features
-    #     )
-
-    #     # GT ↔ image feature alignment loss
-    #     gt_l1_loss = 0.0
-    #     if gt_image_features is not None:
-    #         gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
-    #         gt_l1_loss = self.l1_loss_weight * gt_l1_loss
-
-    #     # Degraded feature ↔ degraded feature contrastive loss
-    #     feat_feat_loss = 0.0
-    #     if deg_label is not None:
-    #         feat_feat_loss = self.degradation_feature_contrastive_loss(image_degra_features, deg_label)
-    #         feat_feat_loss = self.intra_degra_weight * feat_feat_loss
-
-    #     if output_dict:
-    #         return {
-    #             "contrastive_loss": clip_loss,
-    #             "degra_loss": num_contrastive_loss,
-    #             "gt_l1_loss": gt_l1_loss,
-    #             "feat_feat_loss": feat_feat_loss
-    #         }
-
-    #     return clip_loss, num_contrastive_loss, gt_l1_loss, feat_feat_loss
-
+            return {
+                "contrastive_loss": clip_loss,
+                "gt_l1_loss": gt_l1_loss,
+                "reg_ls_loss": reg_ls_loss,
+                "fcrc_loss": fcrc_loss,
+                "num_contrastive_loss": num_contrastive_loss
+            }
+        # return clip_loss, gt_l1_loss, intra_type_contrastive_loss
+        return clip_loss, gt_l1_loss, reg_ls_loss, fcrc_loss, num_contrastive_loss
 
 class DistillClipLoss(ClipLoss):
 

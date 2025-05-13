@@ -1,3 +1,55 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+
+# === 路徑與檔案讀取 ===
+embedding_path = "./embeddings"
+embeddings = np.load(os.path.join(embedding_path, "all_embeddings.npy"))
+labels = np.load(os.path.join(embedding_path, "labels.npy"))
+
+# === 類別與 type 對應 ===
+classes = ['blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0',
+           'jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80',
+           'noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40',
+           'resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0']
+
+type_to_indices = {"blur": [], "jpeg": [], "noisy": [], "resize": []}
+for idx, cls in enumerate(classes):
+    for t in type_to_indices:
+        if cls.startswith(t):
+            type_to_indices[t].append(idx)
+
+# === 輸出資料夾 ===
+output_folder = "./tsne_per_type"
+os.makedirs(output_folder, exist_ok=True)
+
+# === 針對每一種類別獨立畫圖 ===
+for deg_type, class_indices in type_to_indices.items():
+    # 選出該類別的 embedding 和 label 數值
+    mask = np.isin(labels, class_indices)
+    sub_embeddings = embeddings[mask]
+    sub_labels = labels[mask]
+    sub_values = np.array([float(classes[i].split(t)[-1]) for i, t in zip(sub_labels, [deg_type]*len(sub_labels))])
+
+    # t-SNE 降維（不加 PCA）
+    tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+    embeddings_2d = tsne.fit_transform(sub_embeddings)
+
+    # 畫圖
+    plt.figure(figsize=(8, 6))
+    sc = plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=sub_values, cmap='plasma', s=10, alpha=0.8)
+    plt.colorbar(sc, label=f"{deg_type} Level")
+    plt.title(f"t-SNE of {deg_type} embeddings")
+    plt.xlabel("t-SNE Dim 1")
+    plt.ylabel("t-SNE Dim 2")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f"{deg_type}_tsne.png"), dpi=300)
+    plt.close()
+
+print(f"All individual t-SNE plots saved to: {output_folder}")
+
+
 # import os
 # import numpy as np
 # import matplotlib.pyplot as plt
@@ -55,67 +107,67 @@
 #     plt.close()
 
 # print(f"Saved all t-SNE plots to: {output_folder}")
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from collections import defaultdict
-import re
+# import os
+# import numpy as np
+# import matplotlib.pyplot as plt
+# from sklearn.manifold import TSNE
+# from sklearn.decomposition import PCA
+# from collections import defaultdict
+# import re
 
-# --- 載入資料 ---
-embedding_path = "./embeddings"
-embeddings = np.load(os.path.join(embedding_path, "all_embeddings.npy"))
-labels = np.load(os.path.join(embedding_path, "labels.npy"))
+# # --- 載入資料 ---
+# embedding_path = "./embeddings"
+# embeddings = np.load(os.path.join(embedding_path, "all_embeddings.npy"))
+# labels = np.load(os.path.join(embedding_path, "labels.npy"))
 
-# 類別順序
-classes = ['blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0',
-           'jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80',
-           'noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40',
-           'resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0']
+# # 類別順序
+# classes = ['blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0',
+#            'jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80',
+#            'noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40',
+#            'resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0']
 
-class_to_idx = {cls: i for i, cls in enumerate(classes)}
-idx_to_class = {i: cls for cls, i in class_to_idx.items()}
+# class_to_idx = {cls: i for i, cls in enumerate(classes)}
+# idx_to_class = {i: cls for cls, i in class_to_idx.items()}
 
-# --- 要細分的類別，例如 blur ---
-detailed_base = "blur"
+# # --- 要細分的類別，例如 blur ---
+# detailed_base = "blur"
 
-# base 類別轉換
-def get_base_class(name):
-    return re.sub(r'[0-9.]+$', '', name)
+# # base 類別轉換
+# def get_base_class(name):
+#     return re.sub(r'[0-9.]+$', '', name)
 
-# --- 建 label map：細分的（如 blur0.5）保留，其他變成 base label（如 jpeg）
-mapped_labels = []
-for i in range(len(labels)):
-    cls_name = idx_to_class[labels[i]]
-    if get_base_class(cls_name) == detailed_base:
-        mapped_labels.append(cls_name)  # eg. blur1.5
-    else:
-        mapped_labels.append(get_base_class(cls_name))  # eg. jpeg, resize, noisy
+# # --- 建 label map：細分的（如 blur0.5）保留，其他變成 base label（如 jpeg）
+# mapped_labels = []
+# for i in range(len(labels)):
+#     cls_name = idx_to_class[labels[i]]
+#     if get_base_class(cls_name) == detailed_base:
+#         mapped_labels.append(cls_name)  # eg. blur1.5
+#     else:
+#         mapped_labels.append(get_base_class(cls_name))  # eg. jpeg, resize, noisy
 
-unique_labels = sorted(set(mapped_labels))
-label_to_color = {label: i for i, label in enumerate(unique_labels)}
+# unique_labels = sorted(set(mapped_labels))
+# label_to_color = {label: i for i, label in enumerate(unique_labels)}
 
-# --- 降維處理 ---
-pca = PCA(n_components=50)
-embeddings_pca = pca.fit_transform(embeddings)
-tsne = TSNE(n_components=2, random_state=42, perplexity=30)
-embeddings_2d = tsne.fit_transform(embeddings_pca)
+# # --- 降維處理 ---
+# pca = PCA(n_components=50)
+# embeddings_pca = pca.fit_transform(embeddings)
+# tsne = TSNE(n_components=2, random_state=42, perplexity=30)
+# embeddings_2d = tsne.fit_transform(embeddings_pca)
 
-# --- 畫圖 ---
-plt.figure(figsize=(10, 8))
-cmap = plt.get_cmap("tab20")  # 最多20種顏色
+# # --- 畫圖 ---
+# plt.figure(figsize=(10, 8))
+# cmap = plt.get_cmap("tab20")  # 最多20種顏色
 
-for label in unique_labels:
-    idx = [i for i, l in enumerate(mapped_labels) if l == label]
-    x = embeddings_2d[idx, 0]
-    y = embeddings_2d[idx, 1]
-    plt.scatter(x, y, s=10, alpha=0.6, label=label, color=cmap(label_to_color[label] % 20))
+# for label in unique_labels:
+#     idx = [i for i, l in enumerate(mapped_labels) if l == label]
+#     x = embeddings_2d[idx, 0]
+#     y = embeddings_2d[idx, 1]
+#     plt.scatter(x, y, s=10, alpha=0.6, label=label, color=cmap(label_to_color[label] % 20))
 
-plt.legend(markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left')
-plt.title(f"t-SNE: Detailed '{detailed_base}' Levels + Other Base Categories")
-plt.xlabel("t-SNE Dim 1")
-plt.ylabel("t-SNE Dim 2")
-plt.tight_layout()
-plt.savefig(f"./tsne_detailed_{detailed_base}.png", dpi=300)
-plt.show()
+# plt.legend(markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left')
+# plt.title(f"t-SNE: Detailed '{detailed_base}' Levels + Other Base Categories")
+# plt.xlabel("t-SNE Dim 1")
+# plt.ylabel("t-SNE Dim 2")
+# plt.tight_layout()
+# plt.savefig(f"./tsne_detailed_{detailed_base}.png", dpi=300)
+# plt.show()

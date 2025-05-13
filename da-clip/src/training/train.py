@@ -1,5 +1,7 @@
 import json
-import logging
+# import logging
+from loguru import logger as logging
+
 import math
 import os
 import time
@@ -64,7 +66,6 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
     autocast = get_autocast(args.precision)
     input_dtype = get_input_dtype(args.precision)
 
-
     model.train()
     if args.distill:
         dist_model.eval()
@@ -83,30 +84,33 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
     data_time_m = AverageMeter()
     end = time.time()
     for i, batch in enumerate(dataloader):
+
         i_accum = i // args.accum_freq
         step = num_batches_per_epoch * epoch + i_accum
 
         if not args.skip_scheduler:
             scheduler(step)
 
-        # images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, deg_label = batch
-        images, texts= batch
-
-        # images = images.to(device=device, dtype=input_dtype, non_blocking=True)
-        # texts = texts.to(device=device, non_blocking=True)
-        # gt_images = gt_images.to(device=device, dtype=input_dtype, non_blocking=True)
-        # pos_text = pos_text.to(device=device, non_blocking=True)
-        # neg_texts = neg_texts.to(device=device, non_blocking=True)
-        # deg_neg_texts = deg_neg_texts.to(device=device, dtype=input_dtype, non_blocking=True)
+        # images, texts, gt_images, deg_label, deg_type = batch
+        images, texts, gt_images, deg_type, gt_val, bin_center_bank, text_feat_bank, neg_texts, deg_neg_text = batch
+        images = images.to(device=device, dtype=input_dtype, non_blocking=True)
+        texts = texts.to(device=device, non_blocking=True)
+        gt_images = gt_images.to(device=device, dtype=input_dtype, non_blocking=True)
         # deg_label = deg_label.to(device=device, non_blocking=True)
-
+        deg_type = deg_type.to(device=device, non_blocking=True)
+        gt_val = gt_val.to(device=device, non_blocking=True)
+        # bin_center_bank = {k: v.to(device=device, non_blocking=True) for k, v in bin_center_bank.items()}
+        # text_feat_bank = {k: v.to(device=device, non_blocking=True) for k, v in text_feat_bank.items()}
+        bin_center_bank = bin_center_bank.to(device=device, non_blocking=True)
+        text_feat_bank = text_feat_bank.to(device=device, non_blocking=True)
+        neg_texts = neg_texts.to(device=device, non_blocking=True)
+        deg_neg_text = deg_neg_text.to(device=device, dtype=input_dtype, non_blocking=True)
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         if args.accum_freq == 1:
             with autocast():
-                # model_out = model(images, texts, gt_images, pos_text, neg_texts, deg_neg_texts, deg_label)
-                model_out = model(images, texts)
+                model_out = model(images, texts, gt_images, deg_type, gt_val, bin_center_bank, text_feat_bank, neg_texts, deg_neg_text)
                 logit_scale = model_out["logit_scale"]
                 if args.distill:
                     with torch.no_grad():
@@ -118,6 +122,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                 losses["loss"] = total_loss
 
             backward(total_loss, scaler)
+
         else:
             # First, cache the features without any gradient tracking.
             with torch.no_grad():
