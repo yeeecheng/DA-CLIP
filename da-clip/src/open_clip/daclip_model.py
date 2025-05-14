@@ -26,36 +26,43 @@ class MultiTypeDegradationPredictor(nn.Module):
         self.bin_center_bank = None
 
         # Placeholder regressor, will be re-initialized per forward()
-        in_dim = 7
+        in_dim = 28
         self.regressor = nn.Sequential(
-            nn.Linear(in_dim,  8 * in_dim),
+            nn.Linear(in_dim,  2 * in_dim),
             nn.ReLU(),
-            nn.Linear(8 * in_dim, self.num_bins * 4),  # one branch per type
+            nn.Linear(2 * in_dim, self.num_bins * 4),  # one branch per type
             nn.Tanh()
         )
 
-    def forward(self, image_degra_features, deg_type, bin_center_features, degraded_prompt_features):
+    def forward(self, image_degra_features, all_d_type_tokens_features, bin_center_features):
         # image_degra_features: (B, D)
-        # deg_type: (B,) of int IDs: 0=blur, 1=resize, 2=jpeg, 3=noisy
-        # bin_center_bank: dict of {type_str: Tensor(K,)}
-        # text_feat_bank: dict of {type_str: Tensor(K, D)}
+        # all_d_type_tokens_features: (B, 28, D)
+        # bin_center_features: (B, 4, 7)  # center of each bin for each type
 
         B, D = image_degra_features.shape
-        K = self.num_bins
+        num_types = 4
+        bins_per_type = 7
 
-        # Cosine similarity and softmax: (B, K)
-        sim = torch.sum(image_degra_features.unsqueeze(1) * degraded_prompt_features, dim=-1)  # (B, K)
-        probs = F.softmax(sim / self.temperature, dim=-1)
-        # Compute deltas: (B, 4, K) → then pick per-sample type: (B, K)
-        delta_all = self.regressor(sim).view(B, 4, K)
-        delta = delta_all[torch.arange(B), deg_type.view(-1)]  # (B, K)
+        # 1. calculate cosine similarity (B, 28)
+        sim = F.cosine_similarity(image_degra_features.unsqueeze(1), all_d_type_tokens_features, dim=-1)  # (B, 28)
 
-        # Adjusted bin center: (B, K)
-        adjusted = bin_center_features / (1.0 + delta)
+        # 2. softmax over all 28 bins
+        probs = F.softmax(sim / self.temperature, dim=-1)  # (B, 28)
 
-        # Weighted sum prediction: (B,)
-        preds = torch.sum(probs * adjusted, dim=-1)
-        return preds
+        # 3. regressor predict delta (B, 28)
+        delta_all = self.regressor(sim).view(B, num_types, bins_per_type)  # (B, 4, 7)
+
+        # 4. Split probs and bin_center_features into 4 types (B, 4, 7)
+        probs_per_type = probs.view(B, num_types, bins_per_type)  # (B, 4, 7)
+
+        # 5. Adjusted bin center per sample: (B, 4, 7)
+        adjusted_bin_centers = bin_center_features / (1.0 + delta_all)  # (B, 4, 7)
+
+        # 6. Predict per type: (B, 4)
+        preds_per_type = torch.sum(probs_per_type * adjusted_bin_centers, dim=-1)  # (B, 4)
+
+        # return predicted of four type
+        return preds_per_type
 
 class DaCLIP(nn.Module):
     def __init__(self, clip_model: CLIP):
@@ -107,13 +114,10 @@ class DaCLIP(nn.Module):
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
             gt_images: Optional[torch.Tensor] = None,
-            # deg_label: Optional[torch.Tensor] = None,
             deg_type: Optional[torch.Tensor] = None,
             gt_val: Optional[torch.Tensor] = None,
             bin_center_bank: Optional[torch.Tensor] = None,
-            degraded_prompt_bank: Optional[torch.Tensor] = None,
-            neg_texts: Optional[torch.Tensor] = None,
-            deg_neg_texts: Optional[torch.Tensor] = None,
+            all_d_type_tokens: Optional[torch.Tensor] = None,
     ):
         (caption, degradation) = text.chunk(2, dim=-1) if text is not None else (None, None)
         image_features, image_degra_features = self.encode_image(image, control=True, normalize=True) if image is not None else None
@@ -121,22 +125,16 @@ class DaCLIP(nn.Module):
         text_features = self.encode_text(caption, normalize=True) if text is not None else None
         text_degra_features = self.encode_text(degradation, normalize=True) if degradation is not None else None
 
-        neg_texts_features = [self.encode_text(net_text, normalize=True) for net_text in neg_texts.chunk(40, dim=-1)]
-        deg_neg_text_features = [self.encode_text(deg_neg_text, normalize=True) for deg_neg_text in deg_neg_texts.chunk(120, dim=-1)]
-        neg_texts_features = torch.stack(neg_texts_features, dim=0).transpose(0, 1)
-        deg_neg_text_features = torch.stack(deg_neg_text_features, dim=0).transpose(0, 1)
-
         bin_center_features = bin_center_bank
-        
-        if degraded_prompt_bank is not None:
-            degraded_prompt_features = [self.encode_text(degraded_prompt_bank[:, i, :], normalize=True) for i in range(7)]
-            degraded_prompt_features = torch.stack(degraded_prompt_features, dim=1)  # [512, 7, D]
+
+        if all_d_type_tokens is not None:
+            all_d_type_tokens_features = [self.encode_text(all_d_type_tokens[:, i, :], normalize=True) for i in range(28)]
+            all_d_type_tokens_features = torch.stack(all_d_type_tokens_features, dim=1)  # [512, 7, D]
 
         pred = self.predictor(
             image_degra_features=image_degra_features,
-            deg_type=deg_type,
             bin_center_features=bin_center_features,
-            degraded_prompt_features=degraded_prompt_features
+            all_d_type_tokens_features=all_d_type_tokens_features
         )
 
         return {
@@ -148,10 +146,8 @@ class DaCLIP(nn.Module):
             "deg_type": deg_type,
             "gt_val": gt_val,
             "pred": pred,
+            "all_d_type_tokens_features": all_d_type_tokens_features,
             "text_degra_features": text_degra_features,
             "bin_center_features": bin_center_features,
-            "degraded_prompt_features": degraded_prompt_features,
-            "logit_scale": self.logit_scale.exp(),
-            "deg_neg_text_features": deg_neg_text_features,
-            "neg_texts_features": neg_texts_features,
+            "logit_scale": self.logit_scale.exp()
         }

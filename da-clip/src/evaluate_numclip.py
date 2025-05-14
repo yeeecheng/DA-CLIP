@@ -13,7 +13,7 @@ import numpy as np
 from scipy.stats import spearmanr
 from scipy.interpolate import make_interp_spline
 from sklearn.decomposition import PCA
-from open_clip.daclip_model import DaCLIP 
+from open_clip.daclip_model import DaCLIP
 import open_clip
 
 
@@ -30,7 +30,9 @@ def get_bin_center_bank(model, tokenizer, device):
 
     degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
     text_feat_bank = {}
-    bin_center_bank = {}
+
+    bin_center_bank = []
+    all_d_type_tokens = []
     for d_type in degradation_types:
         if d_type in ['blur', 'resize']:
             levels = np.arange(0.5, 4.1, 0.5)
@@ -45,7 +47,7 @@ def get_bin_center_bank(model, tokenizer, device):
         bins = list(zip(levels[:-1], levels[1:]))
         centers = [(s + e) / 2 for s, e in bins]
         # self.bin_center_bank['blur'] → tensor([0.75, 1.25, ..., 3.75])
-        bin_center_bank[d_type] = torch.tensor(centers, dtype=torch.float32)
+        bin_center_bank.append(torch.tensor(centers, dtype=torch.long, device=device))
 
         # semantic prompts
         if d_type == 'blur':
@@ -75,18 +77,17 @@ def get_bin_center_bank(model, tokenizer, device):
 
 
         # self.semantic_prompt_bank['jpeg'] → ["high quality jpeg", ...]
-        tokens = tokenizer(descriptions[:len(centers)]).to(device)  # (7, 77)
-        batch_tokens = tokens.unsqueeze(0).repeat(32, 1, 1)         # (32, 7, 77)
-        flat_tokens = batch_tokens.view(-1, tokens.size(1))         # (224, 77)
+        for p in descriptions[:len(centers)]:
+            tokenized = tokenizer(p)[0].to(device)
+            all_d_type_tokens.append(tokenized)
 
-        with torch.no_grad():
-            text_feats = model.encode_text(flat_tokens, normalize=True)  # (224, D)
+    all_d_type_tokens = torch.stack(all_d_type_tokens)
+    bin_center_bank_features = torch.stack(bin_center_bank)
+    with torch.no_grad():
+        all_d_type_tokens_features = model.encode_text(all_d_type_tokens, normalize=True)  # (224, D)
 
-        # 再 reshape 回 batch 結構
-        text_feats = text_feats.view(32, -1, text_feats.size(-1))        # (32, 7, D)
-        text_feat_bank[d_type] = text_feats.mean(dim=0)  # (7, D)
 
-    return bin_center_bank, text_feat_bank
+    return bin_center_bank_features, all_d_type_tokens_features
 
 
 # === 設定參數 ===
@@ -94,6 +95,8 @@ dataset_path = "/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/dataset
 classes = [c for c in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, c))]
 classes.sort()
 print(f"Classes: {classes}")
+
+
 batch_size = 32
 
 base_class_map = {c: re.match(r'[a-zA-Z]+', c).group() for c in classes}
@@ -128,17 +131,24 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
 
     # Step 4: load state_dict
     missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
-    print(f"Loaded checkpoint from {checkpoint_path}")
-    print(f"Missing keys: {missing_keys}")
-    print(f"Unexpected keys: {unexpected_keys}")
-
-
+    # print(f"Loaded checkpoint from {checkpoint_path}")
+    # print(f"Missing keys: {missing_keys}")
+    # print(f"Unexpected keys: {unexpected_keys}")
 
 
     model.eval().to(device)
 
+    test_prompt = ["almost sharp", "slightly blurry", "mildly blurry", "moderately blurry",
+                "noticeably blurry", "heavily blurred", "extremely blurry", "nearly original size", "slightly downscaled", "noticeably resized",
+                "significantly downscaled", "severely downscaled", "extremely small",
+                "barely visible size", "almost noise-free", "slightly noisy", "mildly noisy", "moderately noisy",
+                "noticeably noisy", "heavily noisy", "extremely noisy","high quality jpeg", "slightly compressed jpeg", "noticeably compressed jpeg",
+                "moderately compressed jpeg", "heavily compressed jpeg", "very low quality jpeg",
+                "extremely compressed jpeg"]
+
     text_full = tokenizer(classes).to(device)
     text_base = tokenizer(base_classes).to(device)
+    test_prompt = tokenizer(test_prompt).to(device)
 
     with torch.no_grad(), torch.cuda.amp.autocast():
         text_features_full = model.encode_text(text_full)
@@ -147,8 +157,12 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
         text_features_base = model.encode_text(text_base)
         text_features_base /= text_features_base.norm(dim=-1, keepdim=True)
 
-    bin_center_bank, text_feat_bank = get_bin_center_bank(model, tokenizer, device)
-    bin_center_bank = {k: v.to(device=device, non_blocking=True) for k, v in bin_center_bank.items()}
+        test_prompt_features = model.encode_text(test_prompt)
+        test_prompt_features /= test_prompt_features.norm(dim=-1, keepdim=True)
+
+    bin_center_bank_features, all_d_type_tokens_features = get_bin_center_bank(model, tokenizer, device)
+    bin_center_bank_features = bin_center_bank_features.to(device=device, non_blocking=True)
+    all_d_type_tokens_features = all_d_type_tokens_features.to(device=device, non_blocking=True)
     total = 0
     correct = 0
     class_correct = {c: 0 for c in classes}
@@ -193,17 +207,17 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
 
                 if len(batch_images) >= batch_size:
                     batch_tensor = torch.stack(batch_images).to(device)
-                    deg_type_tensor = torch.full((len(batch_tensor),), deg_type_to_id[class_type], device=device)
+
                     with torch.no_grad(), torch.cuda.amp.autocast():
                         _, degra_features = model.encode_image(batch_tensor, control=True)
                         degra_features /= degra_features.norm(dim=-1, keepdim=True)
-                        probs_full = (100.0 * degra_features @ text_features_full.T).softmax(dim=-1)
+                        probs_full = (100.0 * degra_features @ test_prompt_features.T).softmax(dim=-1)
                         preds_full = torch.argmax(probs_full, dim=-1)
 
                         probs_base = (100.0 * degra_features @ text_features_base.T).softmax(dim=-1)
                         preds_base = torch.argmax(probs_base, dim=-1)
 
-                        pred_val = model.predictor(degra_features, deg_type_tensor, bin_center_bank[class_type], text_feat_bank[class_type])
+                        pred_val = model.predictor(degra_features, all_d_type_tokens_features, bin_center_bank_features)
                         # print(pred_val)
                     all_preds.extend(pred_val.detach().cpu().tolist())
                     all_gts.extend([class_level] * len(pred_val))
@@ -245,13 +259,13 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
             with torch.no_grad(), torch.cuda.amp.autocast():
                 _, degra_features = model.encode_image(batch_tensor, control=True)
                 degra_features /= degra_features.norm(dim=-1, keepdim=True)
-                probs_full = (100.0 * degra_features @ text_features_full.T).softmax(dim=-1)
+                probs_full = (100.0 * degra_features @ test_prompt_features.T).softmax(dim=-1)
                 preds_full = torch.argmax(probs_full, dim=-1)
 
                 probs_base = (100.0 * degra_features @ text_features_base.T).softmax(dim=-1)
                 preds_base = torch.argmax(probs_base, dim=-1)
 
-                pred_val = model.predictor(degra_features, deg_type_tensor[:len(batch_tensor)], bin_center_bank[class_type], text_feat_bank[class_type])
+                pred_val = model.predictor(degra_features, all_d_type_tokens_features, bin_center_bank_features)
 
             all_preds.extend(pred_val.detach().cpu().tolist())
             all_gts.extend([class_level] * len(pred_val))
@@ -303,61 +317,6 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
     print("Saved all embeddings and labels.")
 
 
-    # for t in sorted(set(all_feat_types)):
-    #     idx = (all_feat_types_np == t)
-    #     if np.sum(idx) < 10:
-    #         continue
-    #     gt_sorted = all_gts[idx][np.argsort(all_gts[idx])]
-    #     pred_sorted = all_preds[idx][np.argsort(all_gts[idx])]
-    #     corr, _ = spearmanr(gt_sorted, pred_sorted)
-
-    #     x_vals = np.linspace(0, len(gt_sorted) - 1, 300)
-    #     gt_spline = make_interp_spline(np.arange(len(gt_sorted)), gt_sorted)(x_vals)
-    #     pred_spline = make_interp_spline(np.arange(len(pred_sorted)), pred_sorted)(x_vals)
-
-    #     plt.figure(figsize=(10, 4))
-    #     plt.plot(x_vals, gt_spline, label='GT', color='gold', linewidth=2)
-    #     plt.plot(x_vals, pred_spline, label='Pred', color='orangered', linestyle='--', linewidth=2)
-    #     plt.title(f"[{t.upper()}] Regression Curve\n")
-    #     # Spearman = {corr:.4f}
-    #     plt.xlabel("Sorted Index")
-    #     plt.ylabel("Degradation Level")
-    #     plt.grid(True, linestyle='--', alpha=0.5)
-    #     plt.legend()
-    #     plt.tight_layout()
-    #     plt.savefig(f"regression_curve_{t}.png")
-    #     plt.close()
-
-
-    # === Embedding vs Level 的有序性分析 ===
-    # all_feats_tensor = torch.cat(all_feats, dim=0).numpy()
-    # gt_array = np.array(all_feat_gts)
-    # type_array = np.array(all_feat_types)
-
-    # for deg_type in np.unique(type_array):
-    #     mask = (type_array == deg_type)
-    #     feats = all_feats_tensor[mask]
-    #     gts = gt_array[mask]
-    #     if len(gts) < 10:
-    #         continue
-    #     pca = PCA(n_components=1)
-    #     proj = pca.fit_transform(feats)[:, 0]
-    #     corr, _ = spearmanr(proj, gts)
-    #     print(f"📊 Embedding-{deg_type} PCA(1) vs GT correlation: {corr:.4f}")
-
-    #     plt.figure(figsize=(6, 4))
-    #     sns.regplot(x=gts, y=proj, scatter_kws={"alpha": 0.3}, line_kws={"color": "red"})
-    #     plt.title(f'{deg_type} Embedding PCA(1) vs GT (Spearman r = {corr:.4f})')
-    #     plt.xlabel("Ground Truth Degradation Level")
-    #     plt.ylabel("PCA(1) Projection")
-    #     plt.grid(True, linestyle='--', alpha=0.5)
-    #     plt.tight_layout()
-    #     plt.savefig(f"embedding_pca_vs_gt_{deg_type}.png")
-    #     plt.close()
-    #     print(f"📉 PCA vs GT 圖已儲存為 embedding_pca_vs_gt_{deg_type}.png")
-
-
-
     # 儲存 csv
     checkpoint_name = os.path.basename(checkpoint_path).replace('.pt', '')
     csv_path = f"predictions_{checkpoint_name}.csv"
@@ -378,7 +337,10 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
 
         # 儲存 regression 預測與真值
     df_reg = pd.DataFrame({
-        "pred_val": all_preds,
+        "pred_val_blur": all_preds[:, 0],
+        "pred_val_noisy": all_preds[:, 1],
+        "pred_val_resize": all_preds[:, 2],
+        "pred_val_jpeg": all_preds[:, 3],
         "gt_val": all_gts,
         "type": all_feat_types
     })
@@ -396,8 +358,8 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
 checkpoints = {
     # "wild DACLIP pre-trained": "/mnt/hdd5/yicheng/daclip-uir/weights/wild-daclip_ViT-L-14.pt",
     # "Original CLIP": "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-start_epoch(original_clip)/checkpoints/epoch_1.pt",
-    "Our method": "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-countclip_numclip_v2/checkpoints/epoch_183.pt",
-    
+    "Our method": "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250514040532/checkpoints/epoch_194.pt",
+
 }
 
 all_base_results = {}

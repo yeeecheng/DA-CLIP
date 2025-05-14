@@ -92,25 +92,23 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
             scheduler(step)
 
         # images, texts, gt_images, deg_label, deg_type = batch
-        images, texts, gt_images, deg_type, gt_val, bin_center_bank, text_feat_bank, neg_texts, deg_neg_text = batch
+        images, texts, gt_images, deg_type, gt_val, bin_center_bank, all_d_type_tokens = batch
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
         gt_images = gt_images.to(device=device, dtype=input_dtype, non_blocking=True)
         # deg_label = deg_label.to(device=device, non_blocking=True)
         deg_type = deg_type.to(device=device, non_blocking=True)
         gt_val = gt_val.to(device=device, non_blocking=True)
-        # bin_center_bank = {k: v.to(device=device, non_blocking=True) for k, v in bin_center_bank.items()}
-        # text_feat_bank = {k: v.to(device=device, non_blocking=True) for k, v in text_feat_bank.items()}
         bin_center_bank = bin_center_bank.to(device=device, non_blocking=True)
-        text_feat_bank = text_feat_bank.to(device=device, non_blocking=True)
-        neg_texts = neg_texts.to(device=device, non_blocking=True)
-        deg_neg_text = deg_neg_text.to(device=device, dtype=input_dtype, non_blocking=True)
+        all_d_type_tokens = all_d_type_tokens.to(device=device, non_blocking=True)
+
+
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         if args.accum_freq == 1:
             with autocast():
-                model_out = model(images, texts, gt_images, deg_type, gt_val, bin_center_bank, text_feat_bank, neg_texts, deg_neg_text)
+                model_out = model(images, texts, gt_images, deg_type, gt_val, bin_center_bank, all_d_type_tokens)
                 logit_scale = model_out["logit_scale"]
                 if args.distill:
                     with torch.no_grad():

@@ -62,10 +62,11 @@ class CsvDataset(Dataset):
 
         self.degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
         self.prompt_to_id = {}
-        self.text_feat_bank = {}
-        self.bin_center_bank = {}
+        self.bin_center_bank = []
 
         self.tokenized_level_prompts = []  # all semantic prompts for text encoder
+
+        self.all_d_type_tokens = []
 
         for d_type in self.degradation_types:
             if d_type in ['blur', 'resize']:
@@ -81,7 +82,7 @@ class CsvDataset(Dataset):
             bins = list(zip(levels[:-1], levels[1:]))
             centers = [(s + e) / 2 for s, e in bins]
             # self.bin_center_bank['blur'] → tensor([0.75, 1.25, ..., 3.75])
-            self.bin_center_bank[d_type] = torch.tensor(centers, dtype=torch.float32)
+            self.bin_center_bank.append(torch.tensor(centers, dtype=torch.long))
 
             # semantic prompts
             if d_type == 'blur':
@@ -111,43 +112,13 @@ class CsvDataset(Dataset):
 
 
             # self.semantic_prompt_bank['jpeg'] → ["high quality jpeg", ...]
-            tokens = [self.tokenize(p)[0] for p in descriptions[:len(centers)]]
-            self.text_feat_bank[d_type] = torch.stack(tokens)
-            # self.text_feat_bank[d_type] = [self.tokenize(p)[0] for p in descriptions[:len(centers)]]
+            for p in descriptions[:len(centers)]:
+                self.all_d_type_tokens.append(self.tokenize(p)[0])
+
+        self.all_d_type_tokens = torch.stack(self.all_d_type_tokens)
+        self.bin_center_bank = torch.stack(self.bin_center_bank)
 
         self.deg_type_to_id = {'blur': 0, 'noisy': 1, 'resize': 2, 'jpeg': 3}
-
-        self.neg_text_pool = {
-            "blur": torch.cat([self.tokenize([f"blur with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
-            "noisy": torch.cat([self.tokenize([f"noisy with parameter {v}"])[0] for v in range(1, 41,1)], dim=0),
-            "resize": torch.cat([self.tokenize([f"resize with parameter {round(v,1)}"])[0] for v in np.arange(0.1, 4.1, 0.1)], dim=0),
-            "jpeg": torch.cat([self.tokenize([f"jpeg with parameter {v}"])[0] for v in range(1, 81, 2)], dim=0)
-        }
-
-
-
-        # self.degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
-        # self.tokenized_level_prompts = []
-        # self.prompt_to_id = {}
-        # idx = 0
-
-        # for d_type in self.degradation_types:
-        #     if d_type in ['blur', 'resize']:
-        #         levels = np.arange(0.5, 4.1, 0.5)  # 0.5, 1.0, ..., 4.0
-        #     elif d_type == 'noisy':
-        #         levels = range(5, 41, 5)           # 5, 10, ..., 40
-        #     elif d_type == 'jpeg':
-        #         levels = range(10, 81, 10)         # 10, 20, ..., 80
-        #     else:
-        #         levels = []
-
-        #     for val in levels:
-        #         prompt = f"{d_type} with parameter {val}" if isinstance(val, int) else f"{d_type} with parameter {round(val, 1)}"
-        #         self.prompt_to_id[prompt] = idx
-        #         idx += 1
-        #         self.tokenized_level_prompts.append(prompt)
-
-        # self.deg_type_to_id = {'blur': 0, 'noisy': 1, 'resize': 2, 'jpeg': 3}
 
 
     def __len__(self):
@@ -163,7 +134,9 @@ class CsvDataset(Dataset):
         # prompt = sample['degradation'].strip()
         # deg_label = self.prompt_to_id[prompt]
         deg_type = self.deg_type_to_id[sample['type']]
-        gt_val = sample["value"]
+
+        gt_val = torch.zeros(4, dtype=torch.float32)
+        gt_val[deg_type] = sample["value"]
 
         if self.da:
             # preprocessing
@@ -180,16 +153,7 @@ class CsvDataset(Dataset):
         images = self.transforms(images)
         gt_images = self.transforms(gt_images)
 
-        neg_texts = self.neg_text_pool[sample['type']]
-        neg_types = [t for t in self.degradation_types  if t != sample['type']]
-
-        deg_neg_text = []
-        for neg_type in neg_types:
-            deg_neg_text.extend(self.neg_text_pool[neg_type])
-
-        deg_neg_text = torch.stack(deg_neg_text, dim=0)
-
-        return images, texts, gt_images, deg_type, gt_val, self.bin_center_bank[sample['type']], self.text_feat_bank[sample['type']], neg_texts, deg_neg_text
+        return images, texts, gt_images, deg_type, gt_val, self.bin_center_bank, self.all_d_type_tokens
 
 
 class SharedEpoch:
