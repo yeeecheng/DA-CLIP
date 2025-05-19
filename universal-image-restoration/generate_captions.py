@@ -16,11 +16,12 @@ IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PP
 
 # DEGRADATION_TYPES = ['motion-blurry','hazy','jpeg-compressed','low-light','noisy','raindrop','rainy','shadowed','snowy','uncompleted']
 # DEGRADATION_TYPES = ['blur0.5', 'blur1.0', 'blur1.5', 'blur2.0', 'blur2.5', 'blur3.0', 'blur3.5', 'blur4.0']
-DEGRADATION_TYPES = [f'jpeg{i}' for i in range(40, 81, 1) if i % 10 != 0]
+# DEGRADATION_TYPES = [f'jpeg{i}' for i in range(40, 81, 1) if i % 10 != 0]
 # DEGRADATION_TYPES = ['noisy5', 'noisy10', 'noisy15', 'noisy20', 'noisy25', 'noisy30', 'noisy35', 'noisy40']
 # DEGRADATION_TYPES = ['resize0.5', 'resize1.0', 'resize1.5', 'resize2.0', 'resize2.5', 'resize3.0', 'resize3.5', 'resize4.0']
 # DEGRADATION_TYPES = ['jpeg10', 'jpeg20', 'jpeg30', 'jpeg40', 'jpeg50', 'jpeg60', 'jpeg70', 'jpeg80']
 
+DEGRADATION_TYPES = ["random"]
 print(DEGRADATION_TYPES)
 
 def is_image_file(filename):

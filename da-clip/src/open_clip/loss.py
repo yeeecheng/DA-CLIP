@@ -228,7 +228,8 @@ class DaClipLoss(ClipLoss):
 
         # Step 1: Cosine similarity (B, 28)
         sim = F.cosine_similarity(image_degra_features.unsqueeze(1), all_d_type_tokens_features, dim=-1)  # (B, 28)
-        sim_exp = torch.exp(sim / self.temperature)  # (B, 28)
+        # sim_exp = torch.exp(sim / self.temperature)  # (B, 28)
+        sim_exp = torch.softmax(sim / self.temperature, dim=-1)
 
         # Step 2: Positive index for each sample
         bin_centers_selected = bin_center_features[torch.arange(B), deg_type]  # (B, 7)
@@ -240,19 +241,20 @@ class DaClipLoss(ClipLoss):
         pos = sim_exp[torch.arange(B), pos_idx]
 
          # Step 3: Normalize deg_val (B, 4) per type
+        norm_scale = 1.0
         norm_deg_val = torch.zeros_like(gt_val)  # (B, 4)
-        type_ranges_list = [(0.5, 4.0), (5, 40), (0.5, 4.0), (10, 80)]
+        type_ranges_list = [(0.5, 4.0), (5.0, 40.0), (0.5, 4.0), (10.0, 80.0)]
         for t in range(4):
             low, high = type_ranges_list[t]
-            norm_deg_val[:, t] = (gt_val[:, t] - low) / (high - low + 1e-8)  # (B, 4)
+            norm_deg_val[:, t] = (gt_val[:, t] - low) / (high - low  + 1e-8) * norm_scale  # (B, 4)
         # get deg_type by deg_val（normalize）
         norm_deg_val_main = norm_deg_val[torch.arange(B), deg_type]  # (B,)
 
         # Pairwise lambda
-        dist_same_type = torch.abs(norm_deg_val_main.view(B, 1) - norm_deg_val_main.view(1, B))  # (B, B)
+        dist_same_type = torch.abs(norm_deg_val_main.view(B, 1) - norm_deg_val_main.view(1, B))   # (B, B)
         # Inter-type fixed 1.5
         same_type_mask = (deg_type.view(B, 1) == deg_type.view(1, B)).float()
-        dist_diff = torch.ones_like(dist_same_type) * 3.0
+        dist_diff = torch.ones_like(dist_same_type) * 4.0
         dist = same_type_mask * dist_same_type + (1.0 - same_type_mask) * dist_diff
         dist = dist / (dist.sum(dim=1, keepdim=True) + 1e-8)  # (B, B)
 
@@ -290,21 +292,20 @@ class DaClipLoss(ClipLoss):
             gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
             gt_l1_loss = self.l1_loss_weight * gt_l1_loss
 
-        # regression l1 loss
+        # regression loss 全改用 MSE
         reg_ls_loss = 0.0
-        # if gt_val is not None:
-        #     # 針對存在 type
-        #     mask_exist = (gt_val > 0).float()
-        #     loss_exist = F.l1_loss(pred * mask_exist, gt_val * mask_exist, reduction='sum') / (mask_exist.sum() + 1e-8)
-
-        #     # 針對不存在 type
-        #     mask_non_exist = (gt_val == 0).float()
-        #     loss_non_exist = F.l1_loss(pred * mask_non_exist, torch.zeros_like(pred) * mask_non_exist, reduction='sum') / (mask_non_exist.sum() + 1e-8)
-
-        #     reg_ls_loss = loss_exist + 0.1 * loss_non_exist  # 可以調整權重
         if gt_val is not None:
-            reg_ls_loss = self.reg_l1_loss_fn(pred, gt_val)
+            # 針對存在 type -> MSE
+            mask_exist = (gt_val > 0).float()
+            # print(mask_exist)
+            loss_exist = F.mse_loss(pred * mask_exist, gt_val * mask_exist, reduction='sum') / (mask_exist.sum() + 1e-8)
 
+            # 針對不存在 type -> MSE
+            mask_non_exist = (gt_val == 0).float()
+            # print(mask_non_exist)
+            loss_non_exist = F.mse_loss(pred * mask_non_exist, torch.zeros_like(pred) * mask_non_exist, reduction='sum') / (mask_non_exist.sum() + 1e-8)
+
+            reg_ls_loss = loss_exist + 1.0 * loss_non_exist  # 權重可以保留 1.0 或加強
 
 
         fcrc_loss = 0.0

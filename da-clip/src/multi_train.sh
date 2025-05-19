@@ -1,9 +1,9 @@
-TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES="0" torchrun --nproc_per_node 1 -m training.main \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES="2,3,4,6" torchrun --nproc_per_node 4 -m training.main \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
-    --train-data="/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/DIV2K_HR/train/merged_daclip_train.csv"  \
-    --val-data="/mnt/hdd5/yicheng/daclip-uir/universal-image-restoration/datasets/lsdir/test/merged_daclip_test.csv"  \
+    --train-data="/mnt/hdd2/yicheng/daclip-uir/universal-image-restoration/datasets/DIV2K_HR/train/merged_daclip_train.csv"  \
+    --val-data="/mnt/hdd2/yicheng/daclip-uir/universal-image-restoration/datasets/lsdir/test/merged_daclip_test.csv"  \
     --csv-img-key filepath \
     --csv-caption-key title \
     --warmup 100 \

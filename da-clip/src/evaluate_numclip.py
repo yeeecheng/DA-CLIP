@@ -358,7 +358,7 @@ def evaluate_checkpoint(checkpoint_path, model_name='daclip_ViT-B-32'):
 checkpoints = {
     # "wild DACLIP pre-trained": "/mnt/hdd5/yicheng/daclip-uir/weights/wild-daclip_ViT-L-14.pt",
     # "Original CLIP": "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-start_epoch(original_clip)/checkpoints/epoch_1.pt",
-    "Our method": "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250514040532/checkpoints/epoch_194.pt",
+    "Our method": "/mnt/hdd2/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-20250519060311/checkpoints/epoch_98.pt",
 
 }
 

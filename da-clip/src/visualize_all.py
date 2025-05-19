@@ -6,7 +6,7 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
 # === 讀取儲存的資料 ===
-embedding_path = "/mnt/hdd5/yicheng/daclip-uir/da-clip/src/logs/daclip_ViT-B-32-countclip_numclip_v2/embeddings"
+embedding_path = "./embeddings"
 embeddings = np.load(os.path.join(embedding_path, "all_embeddings.npy"))
 labels = np.load(os.path.join(embedding_path, "labels.npy"))
 

@@ -27,12 +27,21 @@ class MultiTypeDegradationPredictor(nn.Module):
 
         # Placeholder regressor, will be re-initialized per forward()
         in_dim = 28
-        self.regressor = nn.Sequential(
-            nn.Linear(in_dim,  2 * in_dim),
-            nn.ReLU(),
-            nn.Linear(2 * in_dim, self.num_bins * 4),  # one branch per type
-            nn.Tanh()
-        )
+        bins_per_type = 7
+        # self.regressor = nn.Sequential(
+        #     nn.Linear(in_dim,  2 * in_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(2 * in_dim, self.num_bins * 4),  # one branch per type
+        #     nn.Tanh()
+        # )
+        self.regressors = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(bins_per_type, bins_per_type * 2),
+                nn.ReLU(),
+                nn.Linear(bins_per_type * 2, bins_per_type),
+                nn.Tanh()
+            ) for _ in range(4)
+        ])
 
     def forward(self, image_degra_features, all_d_type_tokens_features, bin_center_features):
         # image_degra_features: (B, D)
@@ -50,7 +59,14 @@ class MultiTypeDegradationPredictor(nn.Module):
         probs = F.softmax(sim / self.temperature, dim=-1)  # (B, 28)
 
         # 3. regressor predict delta (B, 28)
-        delta_all = self.regressor(sim).view(B, num_types, bins_per_type)  # (B, 4, 7)
+        # delta_all = self.regressor(sim).view(B, num_types, bins_per_type)  # (B, 4, 7)
+        delta_all = []
+        for i in range(4):
+            sim_per_type = sim[:, i * bins_per_type:(i + 1) * bins_per_type]  # (B, 7)
+            delta_per_type = self.regressors[i](sim_per_type)  # (B, 7)
+            delta_all.append(delta_per_type)
+        delta_all = torch.stack(delta_all, dim=1)  # (B, 4, 7)
+
 
         # 4. Split probs and bin_center_features into 4 types (B, 4, 7)
         probs_per_type = probs.view(B, num_types, bins_per_type)  # (B, 4, 7)
