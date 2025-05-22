@@ -1,4 +1,4 @@
-TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES="2,3,4,6" torchrun --nproc_per_node 4 -m training.main \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES="3,4,5,6" torchrun --nproc_per_node 4 -m training.main \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
     --report-to tensorboard \

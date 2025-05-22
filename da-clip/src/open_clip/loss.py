@@ -217,55 +217,128 @@ class DaClipLoss(ClipLoss):
 
     def compute_fcrc_loss(self, image_degra_features, all_d_type_tokens_features, gt_val, bin_center_features, deg_type):
         """
+        Multi-type FCRC loss:
         - image_degra_features: (B, D)
         - all_d_type_tokens_features: (B, 28, D)
         - bin_center_features: (B, 4, 7)
-        - deg_val: (B, 4)
+        - gt_val: (B, 4)
+        - deg_type: (B, 4), binary mask
         """
         device = image_degra_features.device
         B, D = image_degra_features.shape
         num_types, num_bins = 4, 7
 
-        # Step 1: Cosine similarity (B, 28)
-        sim = F.cosine_similarity(image_degra_features.unsqueeze(1), all_d_type_tokens_features, dim=-1)  # (B, 28)
-        # sim_exp = torch.exp(sim / self.temperature)  # (B, 28)
-        sim_exp = torch.softmax(sim / self.temperature, dim=-1)
+        # === Step 1: Collect valid (sample_idx, type_idx) pairs ===
+        exist_mask = deg_type.bool()  # (B, 4)
+        sample_idx, type_idx = torch.nonzero(exist_mask, as_tuple=True)  # (N,), (N,)
+        N = sample_idx.shape[0]
 
-        # Step 2: Positive index for each sample
-        bin_centers_selected = bin_center_features[torch.arange(B), deg_type]  # (B, 7)
-        deg_val_selected = gt_val[torch.arange(B), deg_type]  # (B,)
-        abs_diffs = torch.abs(deg_val_selected.unsqueeze(1) - bin_centers_selected)  # (B, 7)
-        bin_idx = torch.argmin(abs_diffs, dim=-1)  # (B,)
+        if N == 0:
+            return torch.tensor(0.0, device=device, requires_grad=True)
 
-        pos_idx = deg_type * num_bins + bin_idx
-        pos = sim_exp[torch.arange(B), pos_idx]
+        # === Step 2: Prepare per-sample features ===
+        img_feat = image_degra_features[sample_idx]  # (N, D)
+        sim_all = F.cosine_similarity(img_feat.unsqueeze(1), all_d_type_tokens_features[sample_idx], dim=-1)  # (N, 28)
+        sim_exp = torch.softmax(sim_all / self.temperature, dim=-1)  # (N, 28)
 
-         # Step 3: Normalize deg_val (B, 4) per type
-        norm_scale = 1.0
-        norm_deg_val = torch.zeros_like(gt_val)  # (B, 4)
-        type_ranges_list = [(0.5, 4.0), (5.0, 40.0), (0.5, 4.0), (10.0, 80.0)]
-        for t in range(4):
-            low, high = type_ranges_list[t]
-            norm_deg_val[:, t] = (gt_val[:, t] - low) / (high - low  + 1e-8) * norm_scale  # (B, 4)
-        # get deg_type by deg_val（normalize）
-        norm_deg_val_main = norm_deg_val[torch.arange(B), deg_type]  # (B,)
+        # === Step 3: Select ground truth bin ===
+        bin_centers = bin_center_features[sample_idx, type_idx]  # (N, 7)
+        gt_vals = gt_val[sample_idx, type_idx]  # (N,)
+        abs_diffs = torch.abs(gt_vals.unsqueeze(1) - bin_centers)  # (N, 7)
+        bin_idx = torch.argmin(abs_diffs, dim=-1)  # (N,)
 
-        # Pairwise lambda
-        dist_same_type = torch.abs(norm_deg_val_main.view(B, 1) - norm_deg_val_main.view(1, B))   # (B, B)
-        # Inter-type fixed 1.5
-        same_type_mask = (deg_type.view(B, 1) == deg_type.view(1, B)).float()
-        dist_diff = torch.ones_like(dist_same_type) * 4.0
-        dist = same_type_mask * dist_same_type + (1.0 - same_type_mask) * dist_diff
-        dist = dist / (dist.sum(dim=1, keepdim=True) + 1e-8)  # (B, B)
+        pos_token_idx = type_idx * num_bins + bin_idx  # (N,)
+        pos = sim_exp[torch.arange(N), pos_token_idx]  # (N,)
 
-        # Step 4: Compute Neg using all 28 tokens
-        # sim_exp: (B, 28), lambda_weight: (B, B)
-        neg = (dist @ sim_exp).sum(dim=1) - dist.diag() * pos  # (B,)
-        neg = neg.view(-1)  # Ensure neg is a 1D tensor
+        # === Step 4: Normalize gt_vals ===
+        type_ranges = [(0.5, 4.0), (5.0, 40.0), (0.5, 4.0), (10.0, 80.0)]
+        lows = torch.tensor([type_ranges[t][0] for t in type_idx], device=device)
+        highs = torch.tensor([type_ranges[t][1] for t in type_idx], device=device)
+        gt_vals_norm = (gt_vals - lows) / (highs - lows + 1e-8)  # (N,)
 
-        # Step 5: Final loss
+        # === Step 5: Pairwise distance & weighting ===
+        diff_matrix = torch.abs(gt_vals_norm[:, None] - gt_vals_norm[None, :])  # (N, N)
+        same_type_mask = (type_idx[:, None] == type_idx[None, :]).float()  # (N, N)
+        lambda_weight = same_type_mask * diff_matrix + (1.0 - same_type_mask) * 4.0
+        lambda_weight = lambda_weight / (lambda_weight.sum(dim=1, keepdim=True) + 1e-8)  # (N, N)
+
+        # === Step 6: Compute negative score ===
+        neg = (lambda_weight @ sim_exp).sum(dim=1) - lambda_weight.diag() * pos  # (N,)
+
+        # === Step 7: Final loss ===
         loss = -torch.log(pos / (pos + neg + 1e-6)).mean()
         return loss
+
+
+    # def compute_fcrc_loss(
+    #     self,
+    #     image_degra_features,            # (B, D)
+    #     all_d_type_tokens_features,      # (B, 28, D)
+    #     gt_val,                          # (B, 4)
+    #     bin_center_features,             # (B, 4, 7)
+    #     deg_type                         # (B, 4)
+    # ):
+    #     device = image_degra_features.device
+    #     B, D = image_degra_features.shape
+    #     num_types, num_bins = 4, 7
+    #     eps = 1e-6
+
+    #     # === Step 1: FCRC Loss ===
+    #     exist_mask = deg_type.bool()  # (B, 4)
+    #     batch_idx, type_idx = torch.nonzero(exist_mask, as_tuple=True)
+    #     N = batch_idx.shape[0]
+    #     if N == 0:
+    #         return torch.tensor(0.0, device=device, requires_grad=True)
+
+    #     img_feat = image_degra_features[batch_idx]  # (N, D)
+    #     gt_val_selected = gt_val[batch_idx, type_idx]  # (N,)
+    #     bin_centers = bin_center_features[batch_idx, type_idx]  # (N, 7)
+    #     all_tokens = all_d_type_tokens_features[batch_idx]  # (N, 28, D)
+
+    #     sim_all = F.cosine_similarity(img_feat.unsqueeze(1), all_tokens, dim=-1)  # (N, 28)
+    #     sim_exp = torch.softmax(sim_all / self.temperature, dim=-1)
+
+    #     abs_diffs = torch.abs(gt_val_selected.unsqueeze(1) - bin_centers)  # (N, 7)
+    #     bin_idx = torch.argmin(abs_diffs, dim=-1)  # (N,)
+    #     pos_idx = type_idx * num_bins + bin_idx  # (N,)
+    #     pos = sim_exp[torch.arange(N), pos_idx]
+    #     neg = (sim_exp.sum(dim=1) - pos)
+
+    #     fcrc_loss = -torch.log(pos / (pos + neg + eps)).mean()
+
+    #     # === Step 2: Inter-type Repulsion ===
+    #     repulsion_loss = 0.0
+    #     margin_sq = 0.5 ** 2
+    #     ref_token = all_d_type_tokens_features[0]  # (28, D)
+    #     type_ids = torch.arange(num_types, device=device).repeat_interleave(num_bins)  # (28,)
+    #     for i in range(num_types):
+    #         for j in range(i + 1, num_types):
+    #             bins_i = ref_token[type_ids == i]  # (7, D)
+    #             bins_j = ref_token[type_ids == j]  # (7, D)
+    #             dists = torch.cdist(bins_i, bins_j, p=2)  # (7, 7)
+    #             margin_penalty = F.relu(margin_sq - dists ** 2).mean()
+    #             repulsion_loss += margin_penalty
+    #     repulsion_loss = repulsion_loss / (num_types * (num_types - 1) / 2)
+
+    #     # === Step 3: Ordinal Constraint ===
+    #     order_loss = 0.0
+    #     for t in range(num_types):
+    #         bin_feats = ref_token[t * num_bins:(t + 1) * num_bins]  # (7, D)
+    #         for i in range(num_bins - 1):
+    #             sim_i = F.cosine_similarity(bin_feats[i].unsqueeze(0), bin_feats[i + 1:], dim=-1)  # (6,)
+    #             order_loss += F.relu(sim_i.mean() - F.cosine_similarity(bin_feats[i], bin_feats[i], dim=0))
+    #     order_loss = order_loss / (num_types * (num_bins - 1))
+
+    #     # === Final Loss ===
+    #     loss = (
+    #         fcrc_loss +
+    #         0.1 * repulsion_loss +
+    #         0.05 * order_loss
+    #     )
+
+    #     return loss
+
+
 
     def forward(
             self,
@@ -292,20 +365,19 @@ class DaClipLoss(ClipLoss):
             gt_l1_loss = self.l1_loss_fn(image_features, gt_image_features)
             gt_l1_loss = self.l1_loss_weight * gt_l1_loss
 
-        # regression loss 全改用 MSE
         reg_ls_loss = 0.0
         if gt_val is not None:
-            # 針對存在 type -> MSE
-            mask_exist = (gt_val > 0).float()
-            # print(mask_exist)
+            # deg_type: (B, 4), gt_val: (B, 4)
+            mask_exist = deg_type.float()
+            mask_non_exist = 1.0 - mask_exist
+
+            # loss for types that exist
             loss_exist = F.mse_loss(pred * mask_exist, gt_val * mask_exist, reduction='sum') / (mask_exist.sum() + 1e-8)
 
-            # 針對不存在 type -> MSE
-            mask_non_exist = (gt_val == 0).float()
-            # print(mask_non_exist)
-            loss_non_exist = F.mse_loss(pred * mask_non_exist, torch.zeros_like(pred) * mask_non_exist, reduction='sum') / (mask_non_exist.sum() + 1e-8)
+            # loss for types that should not exist (predict near 0)
+            loss_non_exist = F.mse_loss(pred * mask_non_exist, torch.zeros_like(pred), reduction='sum') / (mask_non_exist.sum() + 1e-8)
 
-            reg_ls_loss = loss_exist + 1.0 * loss_non_exist  # 權重可以保留 1.0 或加強
+            reg_ls_loss = loss_exist + 1.0 * loss_non_exist
 
 
         fcrc_loss = 0.0

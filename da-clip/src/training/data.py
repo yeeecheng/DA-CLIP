@@ -51,13 +51,13 @@ class CsvDataset(Dataset):
         self.samples = []
         for path, caption in zip(self.images, self.captions):
             _, degradation = caption.split('| ')
-            d_type, _, val = degradation.strip().partition('with parameter ')
-            val = float(val)
+            # d_type, _, val = degradation.strip().partition('with parameter ')
+            matches = re.findall(r'(\w+)\s+with parameter\s+([\d.]+)', degradation)
+            degra_dict = {d_type: float(val) for d_type, val in matches}
             self.samples.append({
                 'img': path,
-                'value': val,
+                'degra_dict': degra_dict,
                 'degradation': degradation,
-                'type': d_type.strip()
             })
 
         self.degradation_types = ['blur', 'noisy', 'resize', 'jpeg']
@@ -131,12 +131,12 @@ class CsvDataset(Dataset):
         texts = str(self.captions[idx])
         gt_images = Image.open(str(self.images[idx]).replace("LQ", "GT"))
         sample = self.samples[idx]
-        # prompt = sample['degradation'].strip()
-        # deg_label = self.prompt_to_id[prompt]
-        deg_type = self.deg_type_to_id[sample['type']]
 
+        deg_type = torch.zeros(4, dtype=torch.float32)
         gt_val = torch.zeros(4, dtype=torch.float32)
-        gt_val[deg_type] = sample["value"]
+        for k, v in sample['degra_dict'].items():
+            deg_type[self.deg_type_to_id[k]] = 1
+            gt_val[self.deg_type_to_id[k]] = v
 
         if self.da:
             # preprocessing
